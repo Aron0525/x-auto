@@ -118,10 +118,89 @@ def handle_tweet(p: XPage, tw: dict, a, stats: dict, tracker) -> dict:
         rec["bookmark"] = {"dry_run": not a.yes, "why": why_b
                            if not ok_b else "需要展开页", "would": ok_b and expand}
 
+    # ---- 关注：能说出理由才关（SOP 第 5 节，独立判断）----
+    handle = (post.get("handle") or tw.get("handle") or "").strip()
+    cap = int(behavior.get("follow_per_session") or 1)
+    if not expand:
+        rec["follow"] = {"skipped": "没读完（展开后才考虑关注）"}
+    elif not handle:
+        rec["follow"] = {"skipped": "拿不到作者 handle"}
+    elif store.followed(handle):
+        rec["follow"] = {"skipped": "已经关注过"}
+    elif stats.get("followed", 0) >= cap:
+        rec["follow"] = {"skipped": f"本次会话关注已达上限 {cap}"}
+    elif sop.quality_score(post) < 2.0:
+        rec["follow"] = {"skipped": "质量分不够，不值得关注"}
+    elif store.budget_left("follow", limits.get("follow")) <= 0:
+        rec["follow"] = {"skipped": "今日关注额度用完"}
+    elif not a.yes:
+        rec["follow"] = {"dry_run": True, "would": True}
+    else:
+        r = _try_follow_author(p, handle)
+        rec["follow"] = r
+        if r.get("ok"):
+            store.mark_follow(handle, {"href": tw["href"], "reason": (r.get("reason") or "")[:60]})
+            stats["followed"] = stats.get("followed", 0) + 1
+            log(f"  ✓ 关注 @{handle}（{r.get('reason', '')[:40]}）")
+            runner.reply_gap()
+        else:
+            log(f"  不关注 @{handle}：{r.get('reason') or r.get('state')}")
+
+    # ---- 留档：读过什么、表过什么态（给以后 AI 复盘用）----
+    try:
+        acts: dict = {}
+        if isinstance(rec.get("like"), dict) and rec["like"].get("ok"):
+            acts["like"] = True
+        if isinstance(rec.get("reply"), dict) and rec["reply"].get("ok"):
+            acts["comment"] = ((rec.get("comment") or {}).get("text") or "")[:120]
+        if isinstance(rec.get("bookmark"), dict) and rec["bookmark"].get("ok"):
+            acts["bookmark"] = True
+        if isinstance(rec.get("follow"), dict) and rec["follow"].get("ok"):
+            acts["follow"] = handle
+        if rec.get("skip"):
+            acts["skip"] = rec["skip"]
+        store.record_tweet(post if expand else tw, acts)
+    except Exception:
+        pass
+
     if expand:
         p.go_back()
         p.ensure_home()
     return rec
+
+
+def _try_follow_author(p, handle: str) -> dict:
+    """详情页点进作者主页：看简介 + 近期 5 条，SOP 校验通过才关注，然后返回详情页。"""
+    out: dict = {"ok": False}
+    link = "document.querySelector('[data-testid=\"User-Name\"] a[role=\"link\"]') || null"
+    if not p.eval(f"return !!({link});"):
+        out["state"] = "no-author-link"
+        return out
+    p._click_expr_human(link, settle=(0.8, 1.6))
+    time.sleep(2.0)
+    bio = p.eval(
+        "(() => { const e = document.querySelector('[data-testid=\"ProfileBio\"]');"
+        " return e ? e.innerText : ''; })()") or ""
+    recent = p.read_tweets(limit=5)
+    ok, reason = sop.should_follow({"bio": bio, "handle": handle}, recent,
+                                   "浏览时质量分已达标")
+    state = p.profile_follow_state()
+    if state == "following":
+        out.update(ok=True, state="already-following", reason="已关注")
+        p.go_back()
+        return out
+    if not ok or state != "follow":
+        out["state"] = "sop-reject" if not ok else "no-follow-button"
+        out["reason"] = reason if not ok else "页面上没有关注按钮"
+        p.go_back()
+        return out
+    btn = p._pick_expr('[data-testid$="-follow"]')
+    p._click_expr_human(btn, settle=(0.8, 1.6))
+    out["ok"] = p.profile_follow_state() == "following"
+    out["state"] = "followed" if out["ok"] else "click-no-effect"
+    out["reason"] = reason
+    p.go_back()          # 回详情页（外层 handle_tweet 收尾还会再回主页）
+    return out
 
 
 def main() -> int:
@@ -141,7 +220,7 @@ def main() -> int:
     p_foryou = start + minutes * 60 * 0.85         # 60~85%：推荐
     # 85%~100%：消化收藏 / 记原创角度
     stats = {"read": 0, "expanded": 0, "liked": 0, "commented": 0,
-             "bookmarked": 0, "skipped": 0}
+             "bookmarked": 0, "skipped": 0, "followed": 0}
     actions: list[dict] = []
     tracker = runner.FailureTracker()
 
@@ -155,11 +234,12 @@ def main() -> int:
             return 5
 
         # ---- 1) 通知优先（SOP 2.3 / 4.8）----
+        me_h = (p.whoami().get("handle") or "").lstrip("@")
         if not a.no_notif and time.time() < deadline:
             runner.wait_out_daily_rest()
             try:
                 if p.goto_notifications():
-                    items = p.read_notifications(limit=15)
+                    items = p.read_notifications(limit=15, me=me_h)
                     todo = []
                     for it in items:
                         need, why = sop.notification_needs_reply(it.get("text", ""))
@@ -260,8 +340,9 @@ def main() -> int:
         log(f"收藏消化阶段异常：{e}")
 
     log(f"结束：读 {stats['read']} 条，展开 {stats['expanded']}，"
-        f"赞 {stats['liked']}，评 {stats['commented']}，藏 {stats['bookmarked']}，滑过 {stats['skipped']}"
-        f"{'（dry-run）' if not a.yes else ''}")
+        f"赞 {stats['liked']}，评 {stats['commented']}，藏 {stats['bookmarked']}，"
+        f"关注 {stats.get('followed', 0)}，滑过 {stats['skipped']}"
+        f"{'（dry-run）' if not a.yes else ''}｜帖子留档：data/tweets.jsonl")
     if a.json:
         print(json.dumps({"stats": stats, "actions": actions[-40:]},
                          indent=2, ensure_ascii=False))

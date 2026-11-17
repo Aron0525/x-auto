@@ -44,7 +44,8 @@ def main() -> int:
         if not p.goto_notifications():
             print("[!] 打不开通知页", file=sys.stderr)
             return 5
-        items = p.read_notifications(limit=20)
+        me = (p.whoami().get("handle") or "").lstrip("@")
+        items = p.read_notifications(limit=20, me=me)
         report["seen"] = items
         print(f"[i] 通知里找到 {len(items)} 条「回复我/提到我」", file=sys.stderr)
 
@@ -87,10 +88,27 @@ def main() -> int:
                 p.goto_notifications()
                 continue
 
-            detail = p.read_tweets(limit=1)
+            ok_avail, why_no = p.post_available()
+            if not ok_avail:
+                print(f"    跳过：帖子不可用（{why_no}）", file=sys.stderr)
+                report["done"].append({"id": it["id"], "skipped": why_no})
+                p.goto_notifications()
+                continue
+            # 按用户要求：进入通知那条后先向上滑动，把父帖/上文读出来再回复
+            p.scroll_context_up(random.randint(3, 6))
+            detail = p.read_tweets(limit=3)
+            if detail:
+                ctx = detail[-1]
+                print(f"    上下文：{(ctx.get('text') or '')[:100]}")
+            detail = detail[:1]
             post = detail[0] if detail else {"text": it["text"]}
             gen = comment_gen.generate({**post, "author": it["handle"]})
             text = (gen.get("text") or "").strip()
+            if not text:
+                print(f"    跳过：没有合格回应（{gen.get('error') or '文案为空'}）", file=sys.stderr)
+                report["done"].append({"id": it["id"], "skipped": "no-comment"})
+                p.goto_notifications()
+                continue
             print(f"    回应：{text[:90]}")
             if not a.yes:
                 report["done"].append({"id": it["id"], "dry_run": True, "comment": text})

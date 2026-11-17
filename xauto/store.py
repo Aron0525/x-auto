@@ -97,6 +97,30 @@ def mark_follow(handle: str, meta: dict | None = None) -> None:
     _save(d)
 
 
+# ---------------- 帖子内容留档（给以后 AI 复盘用）----------------
+
+def record_tweet(tw: dict, actions: dict | None = None) -> None:
+    """把读过的帖子追加到 tweets.jsonl：正文、作者、我们做了什么。
+
+    为什么要留：时间线是滚动的，看完就忘；以后 AI 自主跑时需要
+    「我看过什么、对什么表过态」的记忆，才能避免重复评论、保持人设一致。
+    """
+    if not tw or not tw.get("id"):
+        return
+    config.ensure_dirs()
+    rec = {
+        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "id": str(tw.get("id")),
+        "href": tw.get("href", ""),
+        "handle": tw.get("handle", ""),
+        "author": (tw.get("author") or "")[:90],
+        "text": (tw.get("text") or "")[:400],
+        "actions": actions or {},
+    }
+    with (config.DATA_DIR / "tweets.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
 def seen_dm(conversation_key: str) -> bool:
     return str(conversation_key) in _load()["replied_dms"]
 

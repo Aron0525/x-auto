@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
 import time
 from typing import Any
 
@@ -368,6 +369,14 @@ class XPage:
         if not self.clear_editor(selector):
             raise XPageError("编辑器清不干净（残留草稿），宁可不发 —— 先手动清一下")
         expr = self.editor_expr(selector)
+        # 用真实鼠标点一下编辑器，确保焦点真的在输入框里（只靠 el.focus() 在
+        # 真实鼠标模式下偶尔会被页面自己的焦点管理抢走，实测表现为「读回为空」）
+        try:
+            r = xinput.click_expr(self.cdp, expr, settle=(0.3, 0.8))
+            if not r.get("ok"):
+                print(f"[!] 点击编辑器失败（{r.get('state')}），退回 JS focus", file=sys.stderr)
+        except Exception:
+            pass
         self.eval(f"const el = {expr}; if (el) el.focus(); return true;")
         _sleep(0.35, 0.9)                       # 点开编辑器后先「想一下」
         mode = xinput.type_text(self.cdp, text)
@@ -433,12 +442,25 @@ class XPage:
 
         不能直接用 submit_state 里的坐标 —— 详情页回复框在视口下方时，
         那对坐标是「屏幕外」的，点下去会落空。
+
+        兜底：真实鼠标偶尔点不中工具栏按钮（坐标校验不通过），
+        此时用 X 自带的 Ctrl+Enter 提交 —— 也是真人常用操作。
         """
         assert self.cdp
         expr = self._submit_expr(selector)
-        if not self.eval(f"return !!({expr});"):
+        if self.eval(f"return !!({expr});"):
+            if self._click_expr_human(expr, settle=(0.6, 1.2)):
+                return True
+        try:
+            ed = self.editor_expr(selector)
+            self.eval(f"const el = {ed}; if (el) el.focus(); return true;")
+            _sleep(0.2, 0.5)
+            xinput.send_submit_shortcut(self.cdp)
+            print("[i] 提交按钮点击失败，已改用 Ctrl+Enter", file=sys.stderr)
+            return True
+        except Exception as e:
+            print(f"[!] Ctrl+Enter 兜底也失败：{e}", file=sys.stderr)
             return False
-        return self._click_expr_human(expr, settle=(0.6, 1.2))
 
     def wait_toast(self, timeout: float = 6.0) -> str:
         """X 发送成功后会弹一条提示（role=alert）。拿不到不算失败，只是没取证。"""
@@ -584,6 +606,7 @@ class XPage:
             res["shots"].append(self.shot(f"submit-{attempt}"))
 
             deadline = time.time() + confirm
+            probe = _norm(text)[:24]              # 用正文前 24 字做「已发出」证据
             while time.time() < deadline:
                 toast = self.wait_toast(timeout=0.8)
                 if toast:
@@ -591,10 +614,34 @@ class XPage:
                 if self._editor_cleared(selector):
                     res["cleared"] = True
                     break
+                # 最强证据：我们自己写的话出现在了页面上（说明 X 已经提交了）
+                if probe and self.eval(
+                        f"(() => (document.body.innerText || '').includes({json.dumps(probe)}))()"):
+                    res["on_page"] = True
+                    break
                 time.sleep(0.5)
 
-            if res["cleared"] or res["toast"]:
+            if res["cleared"] or res["toast"] or res.get("on_page"):
                 return res
+
+            # 点按钮没生效 → 换真人常用快捷键 Ctrl+Enter 再试一次
+            if attempt == 1:
+                try:
+                    ed = self.editor_expr(selector)
+                    self.eval(f"const el = {ed}; if (el) el.focus(); return true;")
+                    _sleep(0.2, 0.5)
+                    xinput.send_submit_shortcut(self.cdp)
+                    print("    [i] 按钮无证据，改用 Ctrl+Enter 提交", file=sys.stderr)
+                    _sleep(1.5, 3.0)
+                    if self._editor_cleared(selector):
+                        res["cleared"] = True
+                        return res
+                    if probe and self.eval(
+                            f"(() => (document.body.innerText || '').includes({json.dumps(probe)}))()"):
+                        res["on_page"] = True
+                        return res
+                except Exception as e:
+                    print(f"    [!] Ctrl+Enter 失败：{e}", file=sys.stderr)
 
             # 没有成功证据：先确认「文字还在编辑器里」，确认不了就不重试
             still = _norm(self.editor_text(selector))
@@ -692,6 +739,8 @@ class XPage:
         人还留在详情页，接着滚动自然「划不动」，返回也只退了一层。
         """
         assert self.cdp
+        if not self.on_home():
+            self.discard_drafts()          # 别让发帖页/草稿弹层挡住导航
         if self.on_home() and self.count(S["tweet"]) > 0:
             return True
         for _ in range(max(1, tries)):
@@ -1188,6 +1237,46 @@ class XPage:
             out["state"] = "no-follow-button"
         return out
 
+    # ---------------- 弹层/草稿处理 ----------------
+
+    DISCARD_TEXTS = ("不保存", "放弃", "丢弃", "Discard", "Don't save", "Do not save")
+
+    def discard_drafts(self) -> str:
+        """如果停在发帖页/有草稿弹窗，清空内容并丢弃草稿（不保存）。返回处理结果。"""
+        assert self.cdp
+        res = ""
+        try:
+            if "/compose" in (self.cdp.url() or ""):
+                self.clear_editor()
+                close_expr = ("[...document.querySelectorAll("
+                              "'[data-testid=\"app-bar-close\"], [aria-label=\"Close\"], "
+                              "[aria-label=\"关闭\"]')]"
+                              ".filter(b => b.getBoundingClientRect().width > 8).pop() || null")
+                if self.eval(f"return !!({close_expr});"):
+                    self._click_expr_human(close_expr, settle=(0.8, 1.6))
+                    _sleep(0.8, 1.4)
+                res = "closed-compose"
+            # 「保存草稿？」弹窗 → 选不保存
+            expr = ("[...document.querySelectorAll('[role=\"button\"], button')]"
+                    f".find(b => {list(self.DISCARD_TEXTS)!r}.some(t => "
+                    "(b.innerText || '').trim().toLowerCase().includes(t.toLowerCase())))"
+                    " || null")
+            if self.eval(f"return !!({expr});"):
+                self._click_expr_human(expr, settle=(0.6, 1.2))
+                res = (res + "+discard").strip("+")
+        except Exception:
+            pass
+        return res or "none"
+
+    def scroll_context_up(self, notches: int = 4) -> None:
+        """在详情页向上滚一点，把父帖/上文滚进视野（回复前读上下文用）。"""
+        assert self.cdp
+        try:
+            xinput.scroll_wheel(self.cdp, abs(int(notches)), interval=(0.06, 0.16))
+            _sleep(0.4, 0.9)
+        except Exception:
+            pass
+
     # ---------------- 首页内联发帖（不发弹层）----------------
 
     def scroll_to_top(self, tries: int = 14) -> bool:
@@ -1224,11 +1313,33 @@ class XPage:
         res["where"] = "home-inline"
         return res
 
+    def post_available(self) -> tuple[bool, str]:
+        """当前打开的帖子是否还能互动（不可用/已删除/受限就别回）。"""
+        assert self.cdp
+        try:
+            return tuple(self.cdp.evaluate_json(
+                "return (() => {"
+                " const T = document.body.innerText || '';"
+                " const bad = /此帖子不可用|This post is unavailable|内容不可用|"
+                "帖子已被删除|This Post was deleted|Hmm\\.\\.\\.this page doesn|"
+                "此页面不存在|无法查看此帖子|You.re unable to view/i;"
+                " const m = T.match(bad);"
+                " const hasText = !!document.querySelector('[data-testid=\"tweetText\"]');"
+                " const hasEditor = !!document.querySelector("
+                "   'div[contenteditable=\"true\"][data-testid^=\"tweetTextarea_\"]');"
+                " if (m) return [false, 'unavailable: ' + m[0]];"
+                " if (!hasText && !hasEditor) return [false, 'no-content'];"
+                " return [true, ''];"
+                "})()")) or (False, "unknown")
+        except Exception as e:
+            return False, str(e)
+
     # ---------------- 通知：谁回复/提到了我 ----------------
 
     def goto_notifications(self, wait: float = 2.5) -> bool:
         """点左栏「通知」。（不输网址）"""
         assert self.cdp
+        self.discard_drafts()
         expr = self._pick_expr('[data-testid="AppTabBar_Notifications_Link"]')
         if not self.eval(f"return !!({expr});"):
             return False
@@ -1238,7 +1349,7 @@ class XPage:
         return dom.wait_js(self.cdp, "location.pathname.startsWith('/notifications')",
                            timeout=12.0)
 
-    def read_notifications(self, limit: int = 20) -> list[dict]:
+    def read_notifications(self, limit: int = 20, me: str | None = None) -> list[dict]:
         """抽通知列表：谁回复了我 / 谁提到了我。
 
         X 的通知单元格没有稳定的 data-testid，所以用「文本特征 + 里面的帖子链接」判断：
@@ -1248,6 +1359,7 @@ class XPage:
         assert self.cdp
         js = """
         const n = %d;
+        const me = %s;
         const clean = t => (t || '').replace(/\\s+/g, ' ').trim();
         const cells = [...document.querySelectorAll('[data-testid="cellInnerDiv"]')];
         const out = [];
@@ -1256,7 +1368,13 @@ class XPage:
           if (!text) continue;
           const link = c.querySelector('a[href*="/status/"]');
           const href = link ? link.getAttribute('href').split('?')[0] : '';
-          const isReply = /replied to you|回复了你/i.test(text);
+          // X 中文通知里「有人回复我」有两种写法：
+          //   · 「回复了你」
+          //   · 「回复 @myhandle」（实测正式号就是这种，旧规则漏掉了）
+          const low = text.toLowerCase();
+          const isReply = /replied to you|回复了你/i.test(text)
+            || (me && low.includes('回复 @' + me))
+            || (me && low.includes('replying to @' + me));
           const isMention = /mentioned you|提到了你/i.test(text);
           if (!isReply && !isMention) continue;
           const handle = (href.match(/^\\/([^\\/]+)\\/status\\//) || [])[1] || '';
@@ -1267,7 +1385,7 @@ class XPage:
           if (out.length >= n) break;
         }
         return [...new Map(out.map(o => [o.id, o])).values()];
-        """ % max(1, limit)
+        """ % (max(1, limit), __import__("json").dumps((me or "").lstrip("@").lower()))
         return self.eval(js) or []
 
     # ---------------- 删帖（清理测试内容用）----------------
