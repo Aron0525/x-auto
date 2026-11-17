@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>X 自动化控制台</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --card2:#1d212a; --line:#282d38;
+    --ink:#e7ebf3; --ink2:#98a2b3; --accent:#7aa2ff; --good:#3ddc97;
+    --warn:#ffb454; --bad:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.55 -apple-system,"Segoe UI",system-ui,"Microsoft YaHei",sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:14px 20px;
+         border-bottom:1px solid var(--line);background:#12151b;position:sticky;top:0;z-index:9}
+  header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.3px}
+  .pill{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);
+        color:var(--ink2);background:var(--card2)}
+  .pill.ok{color:var(--good);border-color:#25513f}
+  .pill.bad{color:var(--bad);border-color:#5a2b2b}
+  main{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;padding:16px 20px 40px}
+  @media (max-width:1100px){main{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--ink2);font-weight:600;letter-spacing:.4px}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .metric{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .metric b{display:block;font-size:20px;font-weight:680}
+  .metric span{font-size:12px;color:var(--ink2)}
+  .actions{display:flex;flex-direction:column;gap:10px}
+  .action{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .action .top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .action .name{font-weight:640}
+  .action .desc{color:var(--ink2);font-size:12.5px;margin:4px 0 10px}
+  .params{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+  .params label{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink2)}
+  .params input[type=number]{width:74px}
+  .params input[type=text]{width:220px}
+  input,button{font:inherit;color:var(--ink);background:#0d1016;border:1px solid var(--line);
+               border-radius:8px;padding:6px 9px}
+  input:focus{outline:none;border-color:#3a5a9b}
+  button{cursor:pointer;background:#1b2333;border-color:#2c3344}
+  button:hover{border-color:var(--accent);color:#fff}
+  button.primary{background:#24406f;border-color:#3a6bbf}
+  button.danger{background:#3a1f22;border-color:#6b2d33}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .jobs{display:flex;flex-direction:column;gap:8px}
+  .job{display:flex;align-items:center;gap:10px;background:var(--card2);
+       border:1px solid var(--line);border-radius:10px;padding:9px 11px;font-size:13px}
+  .job .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--ink2)}
+  .tag.running{color:var(--warn);border-color:#57431f}
+  .tag.done{color:var(--good);border-color:#25513f}
+  .tag.err{color:var(--bad);border-color:#5a2b2b}
+  pre{margin:0;background:#0b0d12;border:1px solid var(--line);border-radius:10px;padding:12px;
+      height:300px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,"Cascadia Mono",monospace;
+      color:#c8d3e6;white-space:pre-wrap;word-break:break-word}
+  .feed{display:flex;flex-direction:column;gap:8px;max-height:300px;overflow:auto}
+  .item{background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:8px 10px}
+  .item .meta{font-size:11.5px;color:var(--ink2);margin-bottom:3px}
+  .item .txt{font-size:13px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .muted{color:var(--ink2);font-size:12.5px}
+  .tabs{display:flex;gap:6px;margin-bottom:8px}
+  .tabs button{padding:4px 10px;font-size:12.5px}
+  .tabs button.on{background:#24406f;border-color:#3a6bbf}
+</style>
+</head>
+<body>
+<header>
+  <h1>X 自动化控制台</h1>
+  <span id="pBrowser" class="pill">浏览器 …</span>
+  <span id="pLogin" class="pill">登录 …</span>
+  <span id="pUrl" class="pill" style="max-width:44vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+  <span style="flex:1"></span>
+  <span id="pNow" class="pill"></span>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>今日动作（真实写入的才算）</h2>
+      <div class="metrics">
+        <div class="metric"><b id="mLike">–</b><span>点赞</span></div>
+        <div class="metric"><b id="mReply">–</b><span>评论</span></div>
+        <div class="metric"><b id="mFollow">–</b><span>关注</span></div>
+        <div class="metric"><b id="mRead">–</b><span>本次阅读条数</span></div>
+      </div>
+      <div class="muted" style="margin-top:8px" id="capHint"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>功能板块</h2>
+      <div class="tabs" id="groupTabs">
+        <button data-g="全部工具" class="on">全部工具</button>
+        <button data-g="创作与回复">创作与回复</button>
+        <button data-g="用户与关注">用户与关注</button>
+        <button data-g="查询与管理">查询与管理</button>
+      </div>
+      <div class="actions" id="actions"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>行为设置（所有工具共用）</h2>
+      <div class="params" id="behBox"></div>
+      <div class="row">
+        <button class="primary" id="behSave">保存行为设置</button>
+        <span class="muted" id="behHint"></span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>定时计划（每天自动跑一次）</h2>
+      <div class="row">
+        <label class="muted"><input type="checkbox" id="schEnabled"> 启用</label>
+        <label class="muted">时间 <input type="time" id="schAt" value="14:00"></label>
+        <label class="muted">动作
+          <select id="schAction">
+            <option value="loop">循环任务（互关+刷推+评论）</option>
+            <option value="browse">首页互动（点赞+评论）</option>
+            <option value="read">刷推阅读</option>
+            <option value="notif">回复通知</option>
+          </select>
+        </label>
+      </div>
+      <div class="params" style="margin-top:10px">
+        <label>回关人数<input type="number" id="schFollows" value="3"></label>
+        <label>评论条数<input type="number" id="schReplies" value="3"></label>
+        <label>读帖下限<input type="number" id="schReadMin" value="30"></label>
+        <label>读帖上限<input type="number" id="schReadMax" value="50"></label>
+      </div>
+      <div class="row">
+        <button class="primary" id="schSave">保存计划</button>
+        <span class="muted" id="schNext">下次：–</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>输入方式（可随时切换，新任务生效）</h2>
+      <div class="row" id="modeBox">
+        <label class="muted"><input type="radio" name="inputMode" value="os"> 真实鼠标键盘（会占用你的光标）</label>
+        <label class="muted"><input type="radio" name="inputMode" value="cdp"> 后台模式（不占鼠标，窗口不能最小化）</label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="modeSave">应用</button>
+        <span class="muted" id="modeNow">当前：–</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>每日上限（超过就自动停手）</h2>
+      <div class="params" id="limitBox"></div>
+      <button id="limSave">保存上限</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>任务</h2>
+      <div class="row" style="margin-bottom:10px">
+        <button id="btnRefresh">刷新</button>
+        <label class="muted"><input type="checkbox" id="autoTail" checked> 自动跟随最新任务日志</label>
+      </div>
+      <div class="jobs" id="jobs"><div class="muted">暂无任务</div></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="tabs">
+        <button data-tab="log" class="on">执行输出</button>
+        <button data-tab="activity">做了什么</button>
+      </div>
+      <pre id="logBox">（选择任务后这里显示实时输出）</pre>
+      <div class="feed" id="feedBox" style="display:none"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+let cur = null, tab = 'log', curGroup = '全部工具', lastActions = [], behOptions = null;
+const $ = id => document.getElementById(id);
+
+function fmtCounters(c){
+  const t = (c && c.today) || {};
+  $('mLike').textContent = t.like ?? 0;
+  $('mReply').textContent = t.reply ?? 0;
+  $('mFollow').textContent = t.follow ?? 0;
+  const base = (c && c.posted)||0;
+  $('capHint').textContent = `累计：点赞 ${c?.liked??0}｜评论 ${c?.replied_tweets??0}｜关注 ${c?.followed??0}`;
+}
+
+async function loadActions(){
+  const st = await (await fetch('/api/status')).json();
+  lastActions = st.actions || [];
+  renderActions();
+}
+
+function renderActions(){
+  const box = $('actions'); box.innerHTML = '';
+  lastActions
+    .filter(a => curGroup === '全部工具' || (a.group || '') === curGroup)
+    .forEach(a=>{
+    const el = document.createElement('div');
+    el.className = 'action';
+    const params = (a.params||[]).map(p=>{
+      if (p.type==='bool'||p.type==='flag')
+        return `<label><input type="checkbox" data-p="${p.key}" ${p.default?'checked':''}> ${p.label}</label>`;
+      const type = p.type==='number' ? 'number' : 'text';
+      return `<label>${p.label}<input type="${type}" data-p="${p.key}" value="${p.default??''}"></label>`;
+    }).join('');
+    el.innerHTML = `
+      <div class="top">
+        <span class="name">${a.name}<span class="tag" style="margin-left:8px">${a.group||''}</span></span>
+        <button class="primary" data-run="${a.id}">运行</button>
+      </div>
+      <div class="desc">${a.desc||''}</div>
+      <div class="params">${params}</div>`;
+    el.querySelector('[data-run]').onclick = async (ev)=>{
+      const params = {};
+      el.querySelectorAll('[data-p]').forEach(i=>{
+        const k = i.dataset.p;
+        if (i.type==='checkbox') params[k] = i.checked;
+        else params[k] = i.type==='number' ? Number(i.value) : i.value;
+      });
+      ev.target.disabled = true;
+      const r = await (await fetch('/api/run',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action:a.id, params})})).json();
+      ev.target.disabled = false;
+      if(!r.ok){ alert(r.error||'启动失败'); return; }
+      cur = r.job_id; refresh();
+    });
+    box.appendChild(el);
+  });
+}
+
+document.querySelectorAll('#groupTabs button').forEach(b=>{
+  b.onclick = ()=>{
+    curGroup = b.dataset.g;
+    document.querySelectorAll('#groupTabs button').forEach(x=>x.classList.toggle('on', x===b));
+    renderActions();
+  };
+});
+
+function tagCls(s){
+  if (s==='running') return 'tag running';
+  if (s==='done') return 'tag done';
+  return 'tag err';
+}
+
+async function refresh(){
+  const st = await (await fetch('/api/status')).json();
+  const b = st.browser||{}, p = st.page||{}, c = st.counters||{};
+  $('pBrowser').textContent = b.alive ? `浏览器 ${b.browser||'在线'}` : '浏览器 未连接';
+  $('pBrowser').className = 'pill ' + (b.alive?'ok':'bad');
+  $('pLogin').textContent = p.logged_in ? '已登录' : (p.error?'未连接': '未登录');
+  $('pLogin').className = 'pill ' + (p.logged_in?'ok':'bad');
+  $('pUrl').textContent = p.url||'';
+  $('pNow').textContent = st.now||'';
+  fmtCounters(c);
+  if(st.schedule) $('schNext').textContent = '下次：' + (st.schedule.next || '–');
+  if(st.limits) loadLimits(st.limits);
+  if(st.settings) applyMode(st.settings);
+  if(st.behavior && !behOptions) buildBehavior(st.behavior);
+
+  const jobs = st.jobs||[];
+  const box = $('jobs');
+  if(!jobs.length){ box.innerHTML = '<div class="muted">暂无任务</div>'; }
+  else{
+    box.innerHTML = '';
+    jobs.forEach(j=>{
+      const d = document.createElement('div');
+      d.className='job';
+      d.innerHTML = `<span class="${tagCls(j.status)}">${j.status}</span>
+        <span class="grow">${j.name} <span class="muted">${j.started||''}</span></span>
+        <button data-open="${j.id}">日志</button>
+        ${j.status==='running'?`<button class="danger" data-stop="${j.id}">停止</button>`:''}`;
+      d.querySelector('[data-open]').onclick = ()=>{ cur=j.id; switchTab('log'); };
+      const sb = d.querySelector('[data-stop]');
+      if(sb) sb.onclick = async ()=>{
+        sb.disabled = true;
+        await fetch('/api/stop',{method:'POST',headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({job_id:j.id})});
+        setTimeout(refresh, 500);
+      };
+      box.appendChild(d);
+    });
+    if($('autoTail').checked && jobs.length && jobs[0].status==='running') cur = jobs[0].id;
+  }
+
+  if(tab==='log' && cur){
+    const r = await (await fetch('/api/log?job_id='+encodeURIComponent(cur))).json();
+    const pre = $('logBox'); pre.textContent = r.text || '（暂无输出）';
+    pre.scrollTop = pre.scrollHeight;
+  }
+  if(tab==='activity') await loadActivity();
+}
+
+async function loadActivity(){
+  const a = await (await fetch('/api/activity')).json();
+  const feed = $('feedBox');
+  feed.innerHTML = '';
+  const add = (title, items, render)=>{
+    if(!items.length) return;
+    const h = document.createElement('div');
+    h.className='muted'; h.textContent = title; feed.appendChild(h);
+    items.slice(0,15).forEach(it=>{
+      const d = document.createElement('div'); d.className='item';
+      d.innerHTML = render(it); feed.appendChild(d);
+    });
+  };
+  add('最近评论', a.replies||[], it=>`<div class="meta">${it.at}</div><div class="txt">${it.text||''}</div>`);
+  add('最近关注', a.follows||[], it=>`<div class="meta">${it.at}</div><div class="txt">@${it.handle}</div>`);
+  add('最近读过的帖子', a.reads||[], it=>`<div class="meta">${it.at} · @${it.handle} · ${it.chars} 字</div><div class="txt">${it.text||''}</div>`);
+  if(!feed.children.length) feed.innerHTML = '<div class="muted">还没有记录</div>';
+}
+
+function switchTab(t){
+  tab = t;
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on', b.dataset.tab===t));
+  $('logBox').style.display = t==='log' ? 'block':'none';
+  $('feedBox').style.display = t==='activity' ? 'flex':'none';
+  if(t==='activity') loadActivity();
+}
+
+// ---------------- 定时计划 ----------------
+async function loadSchedule(){
+  const s = await (await fetch('/api/schedule')).json();
+  $('schEnabled').checked = !!s.enabled;
+  $('schAt').value = s.at || '14:00';
+  $('schAction').value = s.action || 'loop';
+  const p = s.params || {};
+  $('schFollows').value = p.follows ?? 3;
+  $('schReplies').value = p.replies ?? 3;
+  $('schReadMin').value = p.read_min ?? 30;
+  $('schReadMax').value = p.read_max ?? 50;
+  $('schNext').textContent = '下次：' + (s.next || '–');
+}
+
+$('schSave').onclick = async ()=>{
+  const action = $('schAction').value;
+  const n = id => Number($(id).value);
+  let params = {yes: true, cycles: 1};
+  if(action === 'loop')
+    params = {yes:true, cycles:1, follows:n('schFollows'), replies:n('schReplies'),
+              read_min:n('schReadMin'), read_max:n('schReadMax')};
+  if(action === 'browse')
+    params = {yes:true, picks:n('schReplies'), scroll:3};
+  if(action === 'read')
+    params = {minutes: Math.max(1, n('schReadMin')), fast:false};
+  if(action === 'notif')
+    params = {yes:true, n:Math.max(1,n('schReplies')), kind:'both'};
+  const r = await (await fetch('/api/schedule',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({enabled:$('schEnabled').checked, at:$('schAt').value,
+                          action, params})})).json();
+  if(r.ok){
+    $('schNext').textContent = '已保存';
+    loadSchedule();
+  } else alert('保存失败');
+};
+
+// ---------------- 行为设置 ----------------
+function buildBehavior(b){
+  behOptions = b.options || {};
+  const v = b.values || {};
+  const sel = (key, opts, label) => {
+    const items = Object.entries(opts||{}).map(([k,txt])=>
+      `<option value="${k}" ${v[key]===k?'selected':''}>${txt}</option>`).join('');
+    return `<label>${label}<select data-b="${key}">${items}</select></label>`;
+  };
+  const num = (key, label, step) =>
+    `<label>${label}<input type="number" step="${step||1}" data-b="${key}" value="${v[key]??''}"></label>`;
+  const chk = (key, label) =>
+    `<label><input type="checkbox" data-b="${key}" ${v[key]?'checked':''}> ${label}</label>`;
+  $('behBox').innerHTML =
+    sel('tone','tones','回复语气') +
+    sel('style','styles','AI 回复风格') +
+    sel('pick_strategy','pick_strategies','选择回复哪篇帖子') +
+    num('reply_gap_min','回复间隔最短(秒)') +
+    num('reply_gap_max','回复间隔最长(秒)') +
+    num('typing_ms','打字间隔(毫秒/字)') +
+    num('rest_after_replies','回复几次后休息') +
+    num('rest_minutes','单次休息(分钟)') +
+    chk('daily_rest_enabled','启用每日定时休息') +
+    `<label>每日休息开始<input type="time" data-b="daily_rest_start" value="${v.daily_rest_start||'02:00'}"></label>` +
+    num('daily_rest_minutes','每日休息时长(分钟)') +
+    num('refresh_on_failures','连续失败几次后刷新') +
+    num('max_refresh','最多连续刷新次数') +
+    num('stop_after_failures','连续失败几次后停止(0=不停)') +
+    `<div class="muted" style="width:100%;margin-top:6px">— 以下按《X 新人浏览互动 SOP》—</div>` +
+    num('session_minutes','时间盒(分钟/次)') +
+    num('expand_prob','展开详情的比例(0~1)', 0.05) +
+    num('like_prob','点赞基线概率(0~1)', 0.05) +
+    num('comment_prob','评论基线概率(0~1)', 0.05) +
+    num('bookmark_prob','收藏概率(0~1)', 0.01) +
+    num('follow_per_session','每次会话最多关注几个') +
+    chk('allow_repost','允许转帖（SOP 建议保持关闭）') +
+    chk('search_mutual_follow','搜索「互关」找人（SOP 禁止，建议关闭）');
+  $('behHint').textContent =
+    `当前：${v.tone||''} / ${v.style||''} / ${v.pick_strategy||''} / ` +
+    `${v.reply_gap_min||0}~${v.reply_gap_max||0}s / ${v.typing_ms||0}ms`;
+}
+
+$('behSave').onclick = async ()=>{
+  const payload = {};
+  document.querySelectorAll('#behBox [data-b]').forEach(i=>{
+    const k = i.dataset.b;
+    if (i.type === 'checkbox') payload[k] = i.checked;
+    else if (i.type === 'number') payload[k] = Number(i.value);
+    else payload[k] = i.value;
+  });
+  const r = await (await fetch('/api/behavior',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)})).json();
+  if(r.ok){ buildBehavior({values:r.values, options:behOptions}); alert('行为设置已保存（新任务生效）'); }
+  else alert('保存失败：' + (r.error||''));
+};
+
+// ---------------- 输入方式 ----------------
+const MODE_TEXT = {
+  os: '真实鼠标键盘（SendInput）——会移动你的光标、需要窗口在前台',
+  cdp: '后台模式（CDP 合成）——不占鼠标，窗口需保持可见（不能最小化）'
+};
+function applyMode(settings){
+  const mode = (settings && settings.input_mode) || 'os';
+  document.querySelectorAll('input[name=inputMode]').forEach(r=> r.checked = r.value===mode);
+  $('modeNow').textContent = '当前：' + MODE_TEXT[mode];
+}
+$('modeSave').onclick = async ()=>{
+  const mode = document.querySelector('input[name=inputMode]:checked')?.value || 'os';
+  const r = await (await fetch('/api/settings',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({input_mode: mode})})).json();
+  if(r.ok){ applyMode(r.settings); alert('已切换：' + MODE_TEXT[mode]); }
+  else alert('保存失败');
+};
+
+// ---------------- 每日上限 ----------------
+const LIMIT_META = {like:'点赞', reply:'评论', follow:'关注', mention:'回通知', post:'发帖'};
+async function loadLimits(limits){
+  const box = $('limitBox');
+  if(!box.dataset.built){
+    box.innerHTML = Object.entries(LIMIT_META).map(([k,label])=>
+      `<label>${label}<input type="number" data-l="${k}" value="0"></label>`).join('');
+    box.dataset.built = '1';
+  }
+  Object.keys(LIMIT_META).forEach(k=>{
+    const el = box.querySelector(`[data-l="${k}"]`);
+    if(el) el.value = (limits && limits[k] != null) ? limits[k] : 0;
+  });
+}
+$('limSave').onclick = async ()=>{
+  const limits = {};
+  document.querySelectorAll('#limitBox [data-l]').forEach(i=> limits[i.dataset.l]=Number(i.value));
+  const r = await (await fetch('/api/limits',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({limits})})).json();
+  if(r.ok) loadLimits(r.limits); else alert('保存失败');
+};
+
+document.querySelectorAll('.tabs button').forEach(b=> b.onclick = ()=> switchTab(b.dataset.tab));
+$('btnRefresh').onclick = refresh;
+
+loadActions().then(()=>{ loadSchedule(); refresh(); });
+setInterval(refresh, 2500);
+</script>
+</body>
+</html>
