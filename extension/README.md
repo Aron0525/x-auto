@@ -1,0 +1,51 @@
+# 浏览器插件版（X Auto SOP Extension）
+
+Python 版的「同门」：同一套 SOP 判定与评论生成逻辑移植成 MV3 扩展，
+不再依赖调试端口和 SendInput，装进 Edge/Chrome 就能跑。
+
+## 与 Python 版的分工
+
+| | Python 版（`xauto/`） | 插件版（`extension/`） |
+|---|---|---|
+| 输入方式 | Win32 SendInput（真实鼠标键盘，需要前台） | CDP `Input.dispatch*`（chrome.debugger，可信事件，**不需要前台**） |
+| 会话循环 | 子进程 + UI 控制台 | content script 状态机 + sessionStorage 跨导航恢复 |
+| 调度 | UI server / x_repeat | `chrome.alarms`：每 30 分钟自动开一轮 30 分钟会话 |
+| SOP 判定 | `xauto/sop.py` | `extension/sop.js`（逐条移植，规则一致） |
+| 评论生成 | `xauto/comment.py` | `extension/comment.js`（同一套 prompt/模板/校验） |
+| 留档 | `data/tweets.jsonl` | `chrome.storage.local`，面板一键导出 JSON |
+
+## 文件结构
+
+```
+extension/
+  manifest.json    MV3：debugger/storage/tabs/sidePanel/alarms
+  sop.js           SOP 判定层（跳过/质量分/展开/赞/评/校验/关注/通知）
+  comment.js       评论生成（LLM 经 background 代发；无密钥走模板兜底）
+  content.js       页面操作 + 会话状态机（home→detail→profile→notif）
+  background.js    CDP 拟人输入（贝塞尔分步移动/逐字 130ms/滚轮 120 单位）+ LLM 代发 + 轮次 alarm
+  panel.html/js    侧边栏：开始/停止/循环、行为参数、额度、活动日志、导出
+```
+
+## 安装（Edge，和现有调试浏览器互不干扰）
+
+1. 地址栏开 `edge://extensions`（Chrome 是 `chrome://extensions`）
+2. 打开右下角「开发人员模式」
+3. 「加载解压缩的扩展」→ 选 `extension/` 目录
+4. 打开 x.com 登录小号 → 点工具栏图标开侧边栏
+5. 「开始一轮会话」手动跑一轮；「循环：开」= 每 30 分钟自动开一轮 30 分钟首页时间线
+6. 面板里填 LLM Key（DeepSeek）；不填就模板兜底，一样过 SOP 校验
+
+## 已知边界（诚实记录）
+
+- **CDP 事件可信但没有 OS 级轨迹**：贝塞尔移动是逐点 `mouseMoved` 模拟的，
+  比 SendInput 差一档（不带真实硬件时序抖动）。风险等级：介于合成事件和真实键鼠之间。
+- 页面必须保持打开（可以后台标签页，不用前台）；**别关那个标签页**，会话状态在 sessionStorage。
+- 调试横幅（"正在调试此浏览器"）是 chrome.debugger 的正常表现，X 页面看不到它。
+- 同机如果 Python 版也在操作同一个 x.com 标签页，会互相抢焦点——二选一跑。
+- Service Worker 30 秒空闲会被回收，但会话循环跑在 content 里不受影响；
+  alarm 唤醒 background 是 Chrome 官方机制，可靠。
+
+## 验证记录（2026-11-17）
+
+- `node --check` 五个 JS 全过
+- 待办：装载后小号真实跑一轮（赞/评/关注/留档全链路）
