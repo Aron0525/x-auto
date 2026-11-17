@@ -114,7 +114,8 @@ def one_round(p: XPage, a) -> dict:
     try:
         argv_backup = sys.argv
         sys.argv = ["x_session.py"] + (["--yes"] if a.yes else []) + \
-                   (["--minutes", str(int(behavior.get("session_minutes") or 25))])
+                   (["--minutes", str(int(behavior.get("session_minutes") or 25))]) + \
+                   (["--no-notif"] if getattr(a, "no_notif", False) else [])
         try:
             rep["session_exit"] = session_mod.main()
         finally:
@@ -133,6 +134,7 @@ def main() -> int:
     ap.add_argument("--cycles", type=int, default=0, help="0 = 一直跑")
     ap.add_argument("--base-min", type=float, default=40.0)
     ap.add_argument("--jitter", type=int, default=600)
+    ap.add_argument("--no-notif", action="store_true", help="只刷首页时间线，跳过通知阶段")
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
