@@ -64,6 +64,10 @@ ACTION_DELAY = (8.0, 20.0)
 # 单个批次内最多做几件事
 DEFAULT_BATCH = 5
 
+# 页面等待全局倍数：X 是 SPA，刚打开/刚重启时渲染很慢，读太早会误判成
+# 「没登录 / 0 条通知 / 时间线空」。觉得快了调大它：$env:XAUTO_WAIT="2"
+PAGE_WAIT = float(os.environ.get("XAUTO_WAIT", "2.0"))
+
 # ---------- 存储 ----------
 # test 档位保持原位（xauto/data），老数据一个字节都不动；prod 另起 data/prod
 _DATA_DEFAULT = PKG_DIR / "data" if INSTANCE == "test" else PKG_DIR / "data" / "prod"

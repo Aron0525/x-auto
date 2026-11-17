@@ -72,6 +72,17 @@ def list_targets(port: int = DEFAULT_PORT, timeout: float = 3.0) -> list[dict]:
 
 
 def find_browser() -> str | None:
+    # XAUTO_BROWSER 可指定浏览器路径（例：用 chrome.exe 与 BOSS 的 msedge 做进程名隔离）
+    env = (os.environ.get("XAUTO_BROWSER") or "").strip()
+    if env:
+        if os.path.exists(env):
+            return env
+        alias = {"chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                 "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"}
+        if env.lower() in alias and os.path.exists(alias[env.lower()]):
+            return alias[env.lower()]
+        print(f"[x] XAUTO_BROWSER={env} 不存在", file=sys.stderr)
+        return None
     cands = [
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",

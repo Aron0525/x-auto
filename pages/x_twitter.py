@@ -250,10 +250,15 @@ class XPage:
 
     def require_login(self) -> None:
         assert self.cdp
-        if not self.s.is_logged_in():
-            raise XPageError(
-                f"当前实例（档位 {config.INSTANCE}，端口 {config.CDP_PORT}）没登录 X。"
-                f"请在对应的浏览器窗口里登录一次（profile: {config.PROFILE_DIR}），然后重跑。")
+        # SPA 冷启动时左栏可能还没渲染出来，别急着误判「没登录」：按 PAGE_WAIT 倍率重试
+        tries = max(1, int(2 * config.PAGE_WAIT))
+        for i in range(tries):
+            if self.s.is_logged_in():
+                return
+            time.sleep(2.5 * min(config.PAGE_WAIT, 3.0))
+        raise XPageError(
+            f"当前实例（档位 {config.INSTANCE}，端口 {config.CDP_PORT}）没登录 X。"
+            f"请在对应的浏览器窗口里登录一次（profile: {config.PROFILE_DIR}），然后重跑。")
 
     def whoami(self) -> dict:
         js = """

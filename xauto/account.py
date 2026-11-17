@@ -42,8 +42,8 @@ def current_handle(page) -> str:
     return normalize(info.get("handle") or info.get("handle_text"))
 
 
-def require(page, expected: Optional[str] = None, attempts: int = 6,
-            settle: float = 1.5, allow_unset: bool = True) -> str:
+def require(page, expected: Optional[str] = None, attempts: int = 12,
+            settle: float = 3.0, allow_unset: bool = True) -> str:
     """校验当前账号是否是本档位期望的号；不一致抛 AccountMismatch。
 
     返回实际 handle。expected 为空且 allow_unset=True 时放行并提醒一次——

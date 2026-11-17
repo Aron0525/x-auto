@@ -478,6 +478,14 @@ def status() -> dict:
         "schedule": {**sch, "next": next_fire_text(sch)},
         "limits": caps,
         "settings": cfg,
+        "instance_info": {
+            "name": _cfg.INSTANCE,
+            "label": _cfg.INSTANCE_LABELS.get(_cfg.INSTANCE, _cfg.INSTANCE),
+            "port": _cfg.CDP_PORT,
+            "profile": _cfg.PROFILE_DIR,
+            "account": _cfg.ACCOUNT or "未绑定",
+            "data_dir": str(_cfg.DATA_DIR),
+        },
         "behavior": _behavior(),
         "actions": [{"id": k, **{kk: vv for kk, vv in v.items() if kk != "cmd"}}
                     for k, v in ACTIONS.items()],

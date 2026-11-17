@@ -5,7 +5,7 @@
   python tools/x_dm.py --read -n 3                           # 看每个会话最后几条消息
   python tools/x_dm.py --template "收到，稍后细聊～" --unread-only -n 3 --yes
 
-安全阀与 x_reply.py 一致：去重簿（已回过的会话不重复回）+ 限额 + 冷却。
+安全阀：去重簿（已回过的会话不重复回）+ 每日限额（limits.json）+ 冷却。
 """
 
 from __future__ import annotations

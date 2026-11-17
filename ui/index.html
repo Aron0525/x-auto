@@ -70,6 +70,7 @@
 <body>
 <header>
   <h1>X 自动化控制台</h1>
+  <span id="pInstance" class="pill">档位 …</span>
   <span id="pBrowser" class="pill">浏览器 …</span>
   <span id="pLogin" class="pill">登录 …</span>
   <span id="pUrl" class="pill" style="max-width:44vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
@@ -256,6 +257,12 @@ async function refresh(){
   $('pLogin').textContent = p.logged_in ? '已登录' : (p.error?'未连接': '未登录');
   $('pLogin').className = 'pill ' + (p.logged_in?'ok':'bad');
   $('pUrl').textContent = p.url||'';
+  const ii = st.instance_info || {};
+  if (ii.name) {
+    $('pInstance').textContent = `档位 ${ii.label || ii.name} · 端口 ${ii.port} · @${ii.account}`;
+    $('pInstance').className = 'pill ' + (ii.name === 'prod' ? 'bad' : 'ok');
+    $('pInstance').title = `数据目录：${ii.data_dir}\nprofile：${ii.profile}`;
+  }
   $('pNow').textContent = st.now||'';
   fmtCounters(c);
   if(st.schedule) $('schNext').textContent = '下次：' + (st.schedule.next || '–');
