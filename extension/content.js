@@ -39,6 +39,9 @@
     tab: '[role="tab"]',
     appClose: '[data-testid="app-bar-close"]',
     userCell: '[data-testid="UserCell"]',   // 详情页右侧 Relevant People 的作者行
+    navExplore: '[data-testid="AppTabBar_Explore_Link"]',
+    showMore: '[data-testid="tweet-text-show-more-link"], [aria-label="Show more"]',
+    newPostsBtn: '[aria-label="New posts"], [data-testid="floatingButton"], [data-testid="scrollToTopButton"]',
   };
 
   const DISCARD_TEXTS = ["不保存", "放弃", "丢弃", "Discard", "Don't save"];
@@ -208,6 +211,57 @@
     return false;
   }
 
+  /* 时间线刷新与回顶（用户策略：帖子是无限流，新帖在上方，往下滑可能滑到旧帖）
+   * 两种情况：
+   *   a) 滚不出新帖（加载停滞）：等更久 → 触发刷新（重新拉取）→ 再等
+   *   b) 滑到旧帖区：优先点顶部蓝色「新帖」箭头回顶；没有就滚回顶部
+   * 返回 "refreshed" | "topped" | "timeout" 便于日志。 */
+  async function refreshOrTop(reason) {
+    const before = timelineSig();
+    // 优先点顶部蓝色「新帖」箭头：回顶 + 触发刷新，最贴近真人操作
+    const arrow = q(SEL.newPostsBtn);
+    if (arrow && await clickEl(arrow, { settle: [1500, 2600] })) {
+      await logAct(`${reason} → 点顶部「新帖」箭头回顶刷新`);
+      await sleep(rnd(1200, 2200) * SPD);
+      if (await waitTimelineChange(before, 15000, "顶部刷新")) return "refreshed";
+      await sleep(rnd(4000, 8000) * SPD);
+      return "topped";
+    }
+    // 没有箭头 → 滚回时间线顶部等新批次
+    for (let i = 0; i < 8; i++) {
+      await scrollBy(-2);
+      await sleep(rnd(400, 800) * SPD);
+      const top = q(SEL.article);
+      if (!top || top.getBoundingClientRect().top < 80) break;
+    }
+    await logAct(`${reason} → 滚回时间线顶部等新帖`);
+    if (await waitTimelineChange(before, 15000, "顶部刷新")) return "topped";
+    return "timeout";
+  }
+
+  /* 全文读取：时间线卡片里长文默认折叠（Show more）。
+   * 展开链接点一次即全文渲染，读完后点回去收起，保持页面原样。
+   * 返回全文文本；展开失败就回退为卡片内可见文本。 */
+  async function fullTextOf(article, timeoutMs = 12000) {
+    const tx = article.querySelector(SEL.tweetText);
+    if (!tx) return "";
+    const visible = norm(tx.innerText);
+    const link = article.querySelector(SEL.showMore);
+    if (!link) return visible;
+    if (!(await clickEl(link, { settle: [500, 900] }))) return visible;
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      const t = norm(tx.innerText);
+      // 展开成功信号：文本变长且不再含「显示更多」提示
+      if (t.length > visible.length && !/显示更多|Show more/i.test(t)) return t;
+      await sleep(500);
+    }
+    // 展开失败回退：点回收起（找不到就不动），用可见文本
+    const back = article.querySelector(SEL.showMore);
+    if (back && back.isConnected) { try { back.click(); } catch (e) {} }
+    return visible;
+  }
+
   async function typeInto(el, text, beh) {
     if (!el) return false;
     if (!(await clickEl(el, { settle: [350, 700] }))) return false;
@@ -309,7 +363,7 @@
         id, href: href.split("?")[0].replace(/\/photo\/\d+$/, ""),
         author: norm(ub && ub.innerText).slice(0, 90),
         handle: (handleLinks[0] || "").replace("/", ""),
-        text: norm(tx && tx.innerText).slice(0, 400),
+        text: norm(tx && tx.innerText),        // 全文（长文折叠由 expandFullText 展开）
         at: tm ? tm.getAttribute("datetime") : "",
         social: norm((a.querySelector('[data-testid="socialContext"]') || {}).innerText).slice(0, 40),
       });
@@ -463,9 +517,10 @@
   async function budgetLeft(kind, cap) { return Math.max(0, cap - (await countToday(kind))); }
 
   async function recordTweet(tw, actions) {
+    if (!tw || !tw.id) return;            // 从发现页直接进主页时没有帖子 id，不留档
     await withStore((s) => {
       s.records.push({ at: new Date().toLocaleString(), id: tw.id, href: tw.href,
-                       handle: tw.handle, author: tw.author, text: (tw.text || "").slice(0, 400), actions });
+                       handle: tw.handle, author: tw.author, text: (tw.text || ""), actions });
       s.records = s.records.slice(-2000);
     });
   }
@@ -495,8 +550,9 @@
     SPD = Math.max(0.5, Math.min(3, s.speed ?? 1.5));   // 全局速度系数生效点
     return {
       typing_ms: s.typing_ms ?? 130, session_minutes: s.session_minutes ?? 30,
-      like_prob: s.like_prob ?? 0.85, comment_prob: s.comment_prob ?? 0.8,
+      like_prob: s.like_prob ?? 0.85, comment_prob: s.comment_prob ?? 0.85,
       expand_prob: s.expand_prob ?? 0.9, bookmark_prob: s.bookmark_prob ?? 0.3,
+      explore_prob: s.explore_prob ?? 0.5,
       follow_per_session: s.follow_per_session ?? 5,
       speed: s.speed ?? 1.5, feed: s.feed || "for_you",
       tone: s.tone || "friendly", style: s.style || "normal",
@@ -531,33 +587,52 @@
   async function stepHome(beh) {
     if (!onHome()) { await goHome(); return; }
     if (ctx.feed && !ctx.tabDone) { await switchFeedTab(ctx.feed); ctx.tabDone = true; }
+    // 每读 5 篇去发现页找一次可关注的人（用户策略：涨关注、涨时间线）
+    if ((ctx.homeReads || 0) >= 5 && (await budgetLeft("follow", beh.limits.follow)) > 0) {
+      ctx.homeReads = 0;
+      ctx.phase = "explore"; saveCtx(ctx); return;
+    }
     const tweets = readTweets(12);
     const fresh = tweets.filter((t) => !ctx.seen.includes(t.id));
     if (!fresh.length) {
+      // 这一屏全是读过的帖子 = 要么滑进了旧帖区（新帖在上方），要么加载停滞。
+      // 两种情况的解法一样：先等一会儿（慢网分页晚到），还不行就回顶/刷新。
       const before = document.querySelectorAll(SEL.article).length;
       await scrollBy(ri(2, 4));
-      // 慢网：滚动触发分页请求，等新帖子真的追加上来
-      if (!(await waitMoreArticles(before))) {
-        ctx.scrollTries = (ctx.scrollTries || 0) + 1;
-        if (ctx.scrollTries >= 3) {
-          await logAct("连续 3 次滚动没有新帖（到头或加载不出），滑回顶部等下一轮");
-          ctx.scrollTries = 0;
-          await scrollBy(-ri(8, 12));
-          await sleep(rnd(8000, 15000) * SPD);
-        }
-      } else ctx.scrollTries = 0;
+      if (await waitMoreArticles(before, 20000)) { ctx.scrollTries = 0; return; }
+      ctx.scrollTries = (ctx.scrollTries || 0) + 1;
+      if (ctx.scrollTries >= 2) {
+        await logAct("连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 回顶部找新帖");
+        await refreshOrTop("滑到旧帖区/加载停滞");
+        ctx.scrollTries = 0;
+        await sleep(rnd(8000, 15000) * SPD);
+      }
       return;
     }
     // 选帖策略：按质量加权（重点领域 > 互动帖 > 内容质量），不是无脑第一条
     fresh.forEach((t) => ctx.seen.push(t.id));
     const tw = fresh.reduce((a, b) => (SOP.qualityScore(b) > SOP.qualityScore(a) ? b : a));
     ctx.stats.read += 1;
+    ctx.homeReads = (ctx.homeReads || 0) + 1;
+
+    // 全文：卡片里长文被折叠（Show more）时，先展开再判定，留档也记全文
+    const artFull = [...document.querySelectorAll(SEL.article)]
+      .find((a) => (a.querySelector('a[href*="/status/"]') || { getAttribute: () => "" })
+        .getAttribute("href").includes(tw.id));
+    if (artFull) {
+      const full = await fullTextOf(artFull);
+      if (full && full.length > (tw.text || "").length) {
+        if (full.length > (tw.text || "").length + 200)
+          await logAct(`展开长文：${tw.text.length} → ${full.length} 字（记录全文）`);
+        tw.text = full;
+      }
+    }
 
     // 实时展示：这一屏读到什么、为什么选它
     const cat = SOP.focusHit(tw.text);
     const inter = SOP.isInteraction(tw) ? " · 互动帖" : "";
     await logAct(`读到 @${tw.handle || "?"}${cat ? " · " + cat : ""}${inter}：` +
-      `"${norm(tw.text).slice(0, 60) || "（无文字内容）"}"`);
+      `"${norm(tw.text).slice(0, 60) || "（无文字内容）"}"（全文 ${tw.text.length} 字）`);
     await sleep(rnd(1200, 5000) * SPD);        // 真人扫读停顿
 
     const [skip, why] = SOP.shouldSkip(tw);
@@ -721,9 +796,9 @@
 
   // 会话节奏：评论后停 30~90 秒（每日额度由 limits 控制）
 
-  /* 作者主页：用户策略是「先互动再关注」，且不再判断方向/质量。
-   * 1) 随便看 2~3 篇（滚动 + 停顿，像真人在翻）
-   * 2) 挑 1~2 篇点赞（保护每日额度），能评论就评论一条
+  /* 作者主页：用户策略是「先认真翻一遍再关注」，且不再判断方向/质量。
+   * 1) 浏览 10 条帖子（不够就滚动加载），逐条读全文
+   * 2) 随机抽 3~5 篇，每篇随机点赞或评论
    * 3) 最后直接点关注 —— 用户明确：不需要看方向，涨互动、涨时间线
    */
   async function stepProfile(beh) {
@@ -738,60 +813,79 @@
     const acts = ctx.pendingActs || {};
     delete ctx.pendingActs;
 
-    // 主页上先翻一翻：这本身也是「看几篇文章」的动作
-    const readN = ri(2, 3);
-    const recent = readTweets(6).slice(0, readN);
-    for (const t of recent) {
-      await sleep(rnd(1500, 4000) * SPD);
-      await logAct(`主页翻到 @${handle}：${norm(t.text).slice(0, 50) || "（无文字）"}`);
+    // 1) 浏览 10 条：不够就滚动加载（最多试 4 次）
+    const want = 10;
+    let pool = readTweets(want);
+    for (let i = 0; i < 4 && pool.length < want; i++) {
+      const before = document.querySelectorAll(SEL.article).length;
+      await scrollBy(ri(2, 4));
+      if (!(await waitMoreArticles(before, 12000))) break;
+      pool = readTweets(want);
     }
-    const bestPost = recent.length
-      ? recent.reduce((a, b) => (SOP.qualityScore(b) > SOP.qualityScore(a) ? b : a))
-      : null;
-
-    // 互动：赞 1~2 篇（额度内），有合适内容再评论一条
-    let likedHere = 0;
-    const likeGoal = Math.min(2, recent.length);
-    for (const t of recent) {
-      if (likedHere >= likeGoal) break;
-      if ((await budgetLeft("like", beh.limits.like)) <= 0) break;
-      if (SOP.shouldSkip(t)[0]) continue;
-      const ok = await likeInTimeline(t.id);
-      if (ok === true) {
-        likedHere++;
-        ctx.stats.liked++; await addEvent("like");
-        await withStore((s) => { s.liked[t.id] = { at: new Date().toISOString() }; });
-        await logAct(`✓ 主页互动：赞 @${handle} 的一篇（${norm(t.text).slice(0, 30)}）`);
-        await sleep(rnd(1200, 3000) * SPD);
-      }
+    pool = pool.slice(0, want);
+    await logAct(`@${handle} 主页开始翻：共 ${pool.length} 条${pool.length < want ? "（到不了 10 条，按现有来）" : ""}`);
+    for (const t of pool) {
+      await sleep(rnd(1200, 3000) * SPD);
+      let full = t.text;
+      const art = [...document.querySelectorAll(SEL.article)]
+        .find((a) => (a.querySelector('a[href*="/status/"]') || { getAttribute: () => "" })
+          .getAttribute("href").includes(t.id));
+      if (art) { const f = await fullTextOf(art); if (f) full = f; }
+      t.text = full;
+      await logAct(`主页翻到：${norm(full).slice(0, 60) || "（无文字）"}（${full.length} 字）`);
     }
 
-    if (bestPost && (await budgetLeft("reply", beh.limits.reply)) > 0 && SOP.shouldComment(bestPost, beh)[0]) {
-      const gen = await COMMENT_GEN.generate(bestPost, beh, beh.llm);
-      const text = (gen.text || "").trim();
-      if (text) {
-        // 主页上评论要先进帖子详情，评完回主页再关注
-        const art = [...document.querySelectorAll(SEL.article)]
-          .find((a) => (a.querySelector('a[href*="/status/"]') || { getAttribute: () => "" })
-            .getAttribute("href").includes(bestPost.id));
-        const target = art && (art.querySelector(SEL.tweetText) || art);
-        if (target && await clickEl(target, { settle: [1500, 2600] })) {
-          await waitContent(1, 15000, "帖子详情");
-          const r = await replyCurrent(text, beh);
-          if (r.ok) {
-            ctx.stats.commented++; await addEvent("reply");
-            await withStore((s) => {
-              s.replied[bestPost.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
-            });
-            acts.comment = text.slice(0, 120);
-            await logAct(`✓ 主页互动：评论 @${handle}：${text.slice(0, 40)}`);
-            await sleep(rnd(20000, 60000) * SPD);
-          } else {
-            await logAct(`✗ 主页互动评论失败：${r.error}`);
+    // 2) 随机抽 3~5 篇，每篇随机赞或评
+    const n = Math.min(ri(3, 5), pool.length);
+    const picked = pool.slice().sort(() => Math.random() - 0.5).slice(0, n);
+    await logAct(`@${handle} 主页互动：抽 ${picked.length} 篇（随机赞/评）`);
+    let likedHere = 0, cmtHere = 0;
+    for (const t of picked) {
+      await sleep(rnd(1000, 2500) * SPD);
+      const canCmt = (await budgetLeft("reply", beh.limits.reply)) > 0 && SOP.shouldComment(t, beh)[0];
+      const canLike = (await budgetLeft("like", beh.limits.like)) > 0 && !SOP.shouldSkip(t)[0];
+      const wantCmt = canCmt && (!canLike || Math.random() < 0.5);   // 两边都行时五五开
+      if (wantCmt) {
+        const gen = await COMMENT_GEN.generate(t, beh, beh.llm);
+        const text = (gen.text || "").trim();
+        if (text) {
+          const art = [...document.querySelectorAll(SEL.article)]
+            .find((a) => (a.querySelector('a[href*="/status/"]') || { getAttribute: () => "" })
+              .getAttribute("href").includes(t.id));
+          const target = art && (art.querySelector(SEL.tweetText) || art);
+          if (target && await clickEl(target, { settle: [1500, 2600] })) {
+            await waitContent(1, 15000, "帖子详情");
+            const r = await replyCurrent(text, beh);
+            if (r.ok) {
+              cmtHere++;
+              ctx.stats.commented++; await addEvent("reply");
+              await withStore((s) => {
+                s.replied[t.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
+              });
+              await recordTweet(t, { comment: text.slice(0, 120) });
+              await logAct(`✓ 主页互动：评论 @${handle}：${text.slice(0, 40)}`);
+              await sleep(rnd(20000, 60000) * SPD);
+            } else {
+              await logAct(`✗ 主页互动评论失败：${r.error}`);
+            }
+            await goBack("作者主页");
+            await waitContent(1, 15000, "作者主页");
           }
-          await goBack("作者主页");
-          await waitContent(1, 15000, "作者主页");
+          continue;
         }
+      }
+      if (canLike) {
+        const ok = await likeInTimeline(t.id);
+        if (ok === true) {
+          likedHere++;
+          ctx.stats.liked++; await addEvent("like");
+          await withStore((s) => { s.liked[t.id] = { at: new Date().toISOString() }; });
+          await recordTweet(t, { like: true });
+          await logAct(`✓ 主页互动：赞 @${handle} 的一篇（${norm(t.text).slice(0, 30)}）`);
+          await sleep(rnd(1200, 3000) * SPD);
+        }
+      } else {
+        await logAct(`主页互动：这一篇跳过（额度或内容不合适）`);
       }
     }
 
@@ -816,7 +910,7 @@
             await withStore((s) => {
               s.followed[handle] = { at: new Date().toISOString(), reason: "主页看过再关注" };
             });
-            await logAct(`✓ 关注 @${handle}（看完 ${readN} 篇 + 赞 ${likedHere} 后关注）`);
+            await logAct(`✓ 关注 @${handle}（翻了 ${pool.length} 篇 + 赞 ${likedHere} 评 ${cmtHere} 后关注）`);
           } else {
             await logAct(`✗ @${handle} 关注未生效（按钮没翻转）`);
           }
@@ -832,6 +926,64 @@
     await recordTweet({ ...(ctx.current || {}), handle }, acts);
     ctx.phase = "home"; ctx.tabDone = false;
     await goHome(); saveCtx(ctx);
+  }
+
+  /* 发现页（用户策略）：从主页点进发现页，遇到可关注用户时按概率点进主页查看。
+   * 概率由面板「发现页概率」控制（默认 0.5），每次会话/每轮都按它摇。
+   * 命中 → 进主页（浏览 10 条 + 随机互动 3~5 篇 + 直接关注）；不命中 → 回首页继续。 */
+  async function stepExplore(beh) {
+    if (location.pathname !== "/explore") {
+      const ok = await clickNav(SEL.navExplore, "发现页", SEL.article);
+      if (!ok || location.pathname !== "/explore") {
+        await logAct("发现页入口没找到，先回首页继续刷");
+        ctx.phase = "home"; await goHome(); saveCtx(ctx); return;
+      }
+    }
+    await waitContent(1, 25000, "发现页");
+    const me = (whoami() || "").toLowerCase();
+    const s = await storeGet();
+
+    // 候选用户：发现页里的帖子作者 + 侧栏推荐人
+    const cands = [];
+    const pushHandle = (h) => {
+      const k = (h || "").toLowerCase();
+      if (!k || k === me || s.followed[k] || cands.includes(k)) return;
+      cands.push(k);
+    };
+    for (const t of readTweets(12)) pushHandle(t.handle);
+    for (const c of document.querySelectorAll(SEL.userCell)) {
+      const links = [...c.querySelectorAll('a[href^="/"]')]
+        .map((a) => (a.getAttribute("href") || "").replace(/^\//, "").split("/")[0])
+        .filter((x) => x && !/^(explore|home|notifications|search|settings|i)$/.test(x));
+      links.forEach(pushHandle);
+    }
+    if (!cands.length) {
+      await logAct("发现页没看到可关注的新用户，回首页继续刷");
+      ctx.phase = "home"; await goHome(); saveCtx(ctx); return;
+    }
+
+    const p = beh.explore_prob ?? 0.5;
+    // 逐个摇概率，命中第一个就进主页
+    for (const h of cands.slice(0, 5)) {
+      if (Math.random() > p) {
+        await logAct(`发现页 @${h}：概率外（${(p * 100) | 0}%），不点进去`);
+        continue;
+      }
+      const cell = [...document.querySelectorAll(SEL.article), ...document.querySelectorAll(SEL.userCell)]
+        .find((el) => [...el.querySelectorAll('a[href^="/"]')]
+          .some((a) => (a.getAttribute("href") || "").toLowerCase() === "/" + h));
+      const link = cell && (cell.querySelector(SEL.userNameLink) || cell.querySelector('a[href="/' + h + '"]'));
+      if (!link) continue;
+      if (!(await clickEl(link, { settle: [1500, 2600] }))) continue;
+      ctx.current = { handle: h, text: "", id: "", href: "" };
+      ctx.pendingActs = {};
+      ctx.phase = "profile";
+      await logAct(`发现页 命中 ${(p * 100) | 0}% 概率 → 点进 @${h} 主页查看`);
+      saveCtx(ctx);
+      return;
+    }
+    await logAct("发现页这一轮没命中概率，回首页继续刷");
+    ctx.phase = "home"; await goHome(); saveCtx(ctx);
   }
 
   async function stepNotif(beh) {
@@ -917,6 +1069,7 @@
         if (ctx.phase === "home" && !onHome()) await goHome();
         switch (ctx.phase) {
           case "home": await stepHome(beh); break;
+          case "explore": await stepExplore(beh); break;
           case "detail": await stepDetail(beh); break;
           case "profile": await stepProfile(beh); break;
           case "notif": await stepNotif(beh); break;
