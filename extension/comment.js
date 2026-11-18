@@ -273,12 +273,14 @@ globalThis.COMMENT_GEN = (() => {
    *         再挑一条「短语 + 模板固定字数 ≤ 上限」的模板来装它。 */
   function mineTemplate(post, len) {
     const { cap } = SOP.commentLength({ comment_target_len: len });
+    // 通知回复场景优先用「他说的话」当短语来源，其次才是正文
+    const src = post.ctxReply || post.text || "";
     const order = MINE_TEMPLATES.map((_, i) => i).sort(() => Math.random() - 0.5);
 
     // 短语目标：整句落 ~len，所以短语大致取 len - 模板固定字数，但不低于 4、不高于 10
     const tryOne = (tplIdx, phraseLen) => {
       const tpl = MINE_TEMPLATES[tplIdx];
-      const phrase = shortPhrase(post.text || "", phraseLen);
+      const phrase = shortPhrase(src, phraseLen);
       if (!phrase) return null;
       const text = tpl.replaceAll("{p}", phrase);
       if (text.length > cap) return null;
@@ -430,7 +432,14 @@ globalThis.COMMENT_GEN = (() => {
 
       const parts = [];
       parts.push(`作者：@${post.handle || post.author || "unknown"}`);
-      parts.push(`主内容：\n${body.slice(0, 800)}`);
+      // 通知回复场景：给他回复我的那条帖子 → 必须结合「我的原帖 + 他说的话」
+      if (post.ctxReply) {
+        if (post.ctxMyPost) parts.push(`我的原帖（上下文，这是我之前说的）：\n${String(post.ctxMyPost).slice(0, 500)}`);
+        parts.push(`对方回复我的话（这是我要回应的内容）：\n${String(post.ctxReply).slice(0, 500)}`);
+        parts.push(`请针对对方的回复写 1 条**对话式**回应：先接住他说的具体点，再表明我的态度或补充。`);
+      } else {
+        parts.push(`主内容：\n${body.slice(0, 800)}`);
+      }
       if (others.length) parts.push(`已有回复（供参考，不要重复别人说过的）：\n- ${others.join("\n- ")}`);
       if (mineBefore.length)
         parts.push(`我之前在这位作者下发过的评论（绝对不要再说一遍，换个角度）：\n- ${mineBefore.join("\n- ")}`);

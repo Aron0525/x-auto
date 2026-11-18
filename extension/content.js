@@ -394,24 +394,54 @@
     return out;
   }
 
+  /* 读通知列表，分成三类（用户策略）：
+   *   reply  别人回复了我的帖子     → 点进去回复（要结合我的原帖 + 他的回复）
+   *   follow 别人关注了我           → 点进去，未关注的进主页看帖点赞后关注
+   *   like   别人点赞了我的帖子     → 不管
+   * 其他（提及、转发等）暂时也归到 reply 类，值得回就回。
+   */
   function readNotifications(n = 20, me) {
     const cells = [...document.querySelectorAll(SEL.cell)];
+    const low = (me || "").toLowerCase();
     const out = [];
     for (const c of cells) {
       if (out.length >= n) break;
+      const text = norm(c.innerText);
+      if (!text) continue;
+      const tl = text.toLowerCase();
+
+      // 作者：通知里第一个用户链接
+      const nameLink = c.querySelector(SEL.userNameLink);
+      const handle = ((nameLink && nameLink.getAttribute("href")) || "").replace(/^\//, "").split("/")[0];
+      if (!handle) continue;
+      if (low && handle.toLowerCase() === low) continue;      // 自己触发的不算
+
+      let kind = "";
+      // —— 关注类：「xxx followed you」「关注了你」，且没有帖子链接
+      if (/(followed you|关注了你|开始关注你)/i.test(text)) kind = "follow";
+      // —— 点赞类：「xxx liked your post」「喜欢了你的帖子」
+      else if (/(liked your (post|reply|comment)|喜欢了你的|赞了你)/i.test(text)) kind = "like";
+      // —— 回复/提及类
+      else if (/(repl(i|y)(ing|ed)?\s*to|回复了|回复你|mentioned you|提到了你|@[\w]+\s*回复)/i.test(text)) kind = "reply";
+      else continue;      // 其它通知类型一律忽略
+
       const link = c.querySelector('a[href*="/status/"]');
-      const id = link ? (link.getAttribute("href").match(/\/status\/(\d+)/) || [])[1] : "";
-      if (!id) continue;
-      const text = norm(c.innerText).slice(0, 300);
-      const low = text.toLowerCase();
-      const mine = me && (low.includes(`回复 @${me.toLowerCase()}`) ||
-                          low.includes(`replied to @${me.toLowerCase()}`) ||
-                          low.includes(`提到 @${me.toLowerCase()}`) ||
-                          low.includes("回复了你") || low.includes("mentioned you"));
-      if (!mine) continue;
-      const handle = ((c.querySelector(SEL.userNameLink) || {}).getAttribute
-        ? (c.querySelector(SEL.userNameLink).getAttribute("href") || "").replace("/", "") : "");
-      out.push({ id, handle, href: link.getAttribute("href"), text });
+      const id = link ? (link.getAttribute("href").match(/\/status\/(\d+)/) || [])[1] || "" : "";
+      // 关注类没有帖子 id，用 handle 当键
+      const key = kind === "follow" ? `follow:${handle.toLowerCase()}` : id;
+      if (!key) continue;
+
+      // 回复类：把「他回复的内容」摘出来（通知卡片里 @我 之后那句）
+      let replyText = text;
+      const m = text.match(new RegExp(`@${me}\\s*([\\s\\S]+)`, "i"));
+      if (m && m[1]) replyText = norm(m[1]);
+      else {
+        // 去掉「Replying to @xxx」和作者名那几行
+        replyText = norm(text.split(/\n/).filter((l) => !/Replying to|@\w+|·\s*\d+[hdm]|回复/.test(l)).join(" "));
+      }
+
+      out.push({ kind, key, id, handle, href: link ? link.getAttribute("href") : `/${handle}`,
+                 text: replyText.slice(0, 200), raw: text.slice(0, 300) });
     }
     return out;
   }
@@ -596,6 +626,60 @@
   }
   async function budgetLeft(kind, cap) { return Math.max(0, cap - (await countToday(kind))); }
 
+  /* ---------- 关注限流（防封号，用户明确要求）----------
+   * 新号短时间大量关注是最容易被平台抓的行为之一，X 官方也有 follow limit
+   * （新号约每天 400 上限，但触发 rate limit 的门槛远低于此）。
+   * 三层限制，任一不满足就不关注：
+   *   1) 两次关注之间的最小间隔（默认 60~180 秒随机）
+   *   2) 每小时上限（默认 8）
+   *   3) 每天上限（沿用面板 max_follow，默认 25）
+   * 另外整轮会话还有 follow_per_session（默认 5）。
+   */
+  async function followAllowed(beh) {
+    const s = await storeGet();
+    const now = Date.now();
+    const ev = (s.events || []).filter((e) => e.kind === "follow" && e.at);
+    const ts = ev.map((e) => Date.parse(e.at)).filter((n) => !isNaN(n)).sort((a, b) => b - a);
+
+    // ① 距上次关注的最小间隔
+    const gapMin = beh.follow_gap_min ?? 60;
+    const gapMax = Math.max(gapMin, beh.follow_gap_max ?? 180);
+    if (ts.length) {
+      const since = (now - ts[0]) / 1000;
+      const need = gapMin + Math.random() * (gapMax - gapMin);   // 每次随机一个目标间隔
+      if (since < need) {
+        return { ok: false, why: `距上次关注才 ${Math.round(since)} 秒，本次需 ≥${Math.round(need)} 秒`,
+                 waitMs: Math.ceil((need - since) * 1000), need };
+      }
+    }
+
+    // ② 每小时上限
+    const hourCap = beh.follow_per_hour ?? 8;
+    const lastHour = ts.filter((t) => now - t < 3600e3).length;
+    if (lastHour >= hourCap) {
+      const oldestThisHour = ts.filter((t) => now - t < 3600e3).sort((a, b) => a - b)[0];
+      const waitMs = Math.max(60e3, oldestThisHour + 3600e3 - now);
+      return { ok: false, why: `本小时已关注 ${lastHour}/${hourCap}，需等约 ${Math.round(waitMs / 60000)} 分钟`,
+               waitMs };
+    }
+
+    // ③ 每日上限
+    const dayCap = beh.limits.follow ?? 25;
+    const today = new Date().toISOString().slice(0, 10);
+    const todayCount2 = ev.filter((e) => (e.at || "").startsWith(today)).length;
+    if (todayCount2 >= dayCap) return { ok: false, why: `今日关注已达上限 ${dayCap}` };
+
+    return { ok: true, today: todayCount2, hour: lastHour };
+  }
+
+  // 记录一次关注（统一入口，保证所有路径都计入限流）
+  async function noteFollow(handle, reason) {
+    await addEvent("follow");
+    await withStore((s) => {
+      s.followed[handle] = { at: new Date().toISOString(), reason: reason || "" };
+    });
+  }
+
   async function recordTweet(tw, actions) {
     if (!tw || !tw.id) return;            // 从发现页直接进主页时没有帖子 id，不留档
     await withStore((s) => {
@@ -671,6 +755,10 @@
       // 我的账号名（测试号/正式号都填，逗号分隔）——用于「不碰自己帖子」判定
       my_handles: s.my_handles || "",
       follow_per_session: s.follow_per_session ?? 5,
+      // 关注限流：两次关注的最小/最大间隔（秒）、每小时上限
+      follow_gap_min: s.follow_gap_min ?? 60,
+      follow_gap_max: s.follow_gap_max ?? 180,
+      follow_per_hour: s.follow_per_hour ?? 8,
       speed: s.speed ?? 1.5, feed: s.feed || "for_you",
       tone: s.tone || "friendly", style: s.style || "normal",
       limits: { like: s.max_like ?? 60, reply: s.max_reply ?? 20, follow: s.max_follow ?? 25 },
@@ -1159,8 +1247,12 @@
     }
 
     // 关注：不再判断方向/内容质量，直接点（用户策略：先把关注量做起来）
+    // 但必须过限流：间隔 / 每小时 / 每天 三道闸
     let followAct = false;
-    if ((await budgetLeft("follow", beh.limits.follow)) > 0) {
+    const fr = await followAllowed(beh);
+    if (!fr.ok) {
+      await logAct(`暂不关注 @${handle}：${fr.why}`, "wait");
+    } else if ((await budgetLeft("follow", beh.limits.follow)) > 0) {
       const { state: st, btn: followBtn } = followStateIn();
       if (st === "following") {
         await withStore((s) => { s.followed[handle] = { at: new Date().toISOString(), state: "already" }; });
@@ -1175,13 +1267,11 @@
           }
           if (on) {
             followAct = true;
-            ctx.stats.followed++; await addEvent("follow");
-            await withStore((s) => {
-              s.followed[handle] = { at: new Date().toISOString(), reason: "主页看过再关注" };
-            });
+            ctx.stats.followed++;
+            await noteFollow(handle, "主页看过再关注");
             await logAct(`✓ 关注 @${handle}（翻了 ${pool.length} 篇 + 赞 ${likedHere} 评 ${cmtHere} 后关注）`, "follow");
           } else {
-            await logAct(`✗ @${handle} 关注未生效（按钮没翻转）`);
+            await logAct(`✗ @${handle} 关注未生效（按钮没翻转）`, "fail");
           }
         }
       } else {
@@ -1256,6 +1346,13 @@
       }
 
       // 未命中 → 就地关注（侧边栏/发现页那一行的 Follow 按钮），不进主页
+      const frInline = await followAllowed(beh);
+      if (!frInline.ok) {
+        await logAct(`发现页 @${h}：暂不关注 —— ${frInline.why}`, "wait");
+        // 小时/日上限已满 → 本轮不再尝试；只是间隔不够 → 等够了再继续下一条
+        if (!frInline.waitMs || frInline.waitMs > 15 * 60e3) break;
+        continue;
+      }
       if ((await budgetLeft("follow", beh.limits.follow)) <= 0) {
         await logAct(`发现页 @${h}：概率外（${(p * 100) | 0}%），但关注额度满了，跳过`, "skip");
         continue;
@@ -1273,10 +1370,8 @@
       }
       if (on) {
         inlineFollowed++;
-        ctx.stats.followed++; await addEvent("follow");
-        await withStore((st) => {
-          st.followed[h] = { at: new Date().toISOString(), reason: "发现页未命中概率，就地关注" };
-        });
+        ctx.stats.followed++;
+        await noteFollow(h, "发现页未命中概率，就地关注");
         await logAct(`✓ 发现页 @${h}：概率外（${(p * 100) | 0}%）→ 直接就地关注（不进主页）`, "follow");
         await sleep(rnd(2000, 5000) * SPD);
       } else {
@@ -1294,10 +1389,25 @@
       const me = whoami();
       const items = readNotifications(20, me);
       const s = await storeGet();
-      ctx.notifTodo = items.filter((it) =>
-        SOP.notificationNeedsReply(it.text)[0] && !s.replied[it.id]);
+      // 分类处理（用户策略）：回复类要回；关注类要去看主页；点赞类不管
+      const replyables = [];
+      const follows = [];
+      let likes = 0;
+      for (const it of items) {
+        if (it.kind === "like") { likes++; continue; }
+        if (it.kind === "follow") {
+          // 已经关注过的、或这批已经安排过的不再重复
+          if (!s.followed[it.handle.toLowerCase()]) follows.push(it);
+          continue;
+        }
+        // reply / mention：没回过、且值得回
+        if (s.replied[it.id]) continue;
+        if (!SOP.notificationNeedsReply(it.text)[0]) continue;
+        replyables.push(it);
+      }
+      ctx.notifTodo = [...replyables, ...follows];
       ctx.notifLoaded = true;
-      await logAct(`通知：${items.length} 条与我相关，${ctx.notifTodo.length} 条值得回`);
+      await logAct(`通知：${items.length} 条 · 待回复 ${replyables.length} · 待看新粉丝 ${follows.length} · 点赞类 ${likes} 条（忽略）`);
     }
     if (!ctx.notifTodo.length) {
       ctx.phase = "home"; ctx.tabDone = false;   // feed 保持会话开始时的设置
@@ -1305,16 +1415,44 @@
     }
     if (Date.now() > ctx.started + (ctx.deadline - ctx.started) * 0.2) {
       // 通知只占前 20% 时间（SOP 11）
+      await logAct("通知时间配额用完，回首页");
       ctx.phase = "home"; ctx.tabDone = false;
       await goHome(); saveCtx(ctx); return;
     }
     const it = ctx.notifTodo.shift();
-    const cell = [...document.querySelectorAll(SEL.cell)]
-      .find((c) => [...c.querySelectorAll(`a[href*="/status/${it.id}"]`)].length);
+
+    // 找这条通知在页面上的卡片
+    const cell = [...document.querySelectorAll(SEL.cell)].find((c) => {
+      if (it.kind === "follow") {
+        const a = c.querySelector(SEL.userNameLink);
+        const h = ((a && a.getAttribute("href")) || "").replace(/^\//, "").split("/")[0];
+        return h && h.toLowerCase() === it.handle.toLowerCase() && /(followed you|关注了你)/i.test(c.innerText || "");
+      }
+      return !!c.querySelector(`a[href*="/status/${it.id}"]`);
+    });
+
+    if (it.kind === "follow") {
+      // 别人关注了我 → 点进他的主页（看帖点赞后关注），而不是点帖子
+      const link = cell && (cell.querySelector(SEL.userNameLink) || cell.querySelector(`a[href="/${it.handle}"]`));
+      if (!link) {
+        await logAct(`新粉丝 @${it.handle}：通知里没找到他的头像链接，跳过`, "skip");
+        saveCtx(ctx); return;
+      }
+      if (!(await clickEl(link, { settle: [1500, 2600] }))) { saveCtx(ctx); return; }
+      ctx.current = { handle: it.handle, text: "", id: "", href: `/${it.handle}` };
+      ctx.pendingActs = {};
+      ctx.phase = "profile";
+      await logAct(`新粉丝 @${it.handle} → 点进主页看帖再决定关注`, "nav");
+      saveCtx(ctx);
+      return;
+    }
+
+    // 回复类
     const link = cell && cell.querySelector('a[href*="/status/"]');
     if (!link) { saveCtx(ctx); return; }
     if (!(await clickEl(link, { settle: [1500, 2600] }))) { saveCtx(ctx); return; }
-    ctx.current = { id: it.id, href: it.href, handle: it.handle, text: it.text, author: it.handle };
+    ctx.current = { id: it.id, href: it.href, handle: it.handle, text: it.text, author: it.handle,
+                    notifText: it.text };     // 他回复我的那句话，回复时要结合上下文
     ctx.plan = { expand: true, doLike: false, doCmt: true, doBm: false };
     ctx.phase = "notif_reply";
     saveCtx(ctx);
@@ -1324,17 +1462,42 @@
     await waitContent(1, 15000, "详情页");
     const [avail, whyNo] = postAvailable();
     if (!avail) { await logAct(`跳过：帖子不可用（${whyNo}）`); ctx.phase = "notif"; await gotoNotifications(); saveCtx(ctx); return; }
-    await scrollBy(-ri(3, 6));               // 先看上文
+    await scrollBy(-ri(3, 6));               // 先看上文（SOP：先读再动）
     await sleep(rnd(800, 1600) * SPD);
-    const detail = readTweets(3);
-    const post = detail[0] || ctx.current;
-    // 兜底：通知回复也可能落到自己的帖子上
-    if (isMyHandle(post.handle, beh)) {
-      await logAct(`跳过通知回复：是我自己的帖子（@${post.handle}）`, "skip");
+
+    /* 【关键】这是「别人回复我的帖子」，页面上的第一条通常是大叔的回复，
+     * 而我自己的原帖在它下面（被回复的那条）。回复时必须两者都读：
+     *   - 我原帖说了什么（上下文）
+     *   - 他具体回了什么（要接住他的话）
+     * 所以这里读多条帖子，自己那条当作「我的原帖」，别人那条当作「他的回复」。
+     */
+    const all = readTweets(6);
+    const minePost = all.find((t) => isMyHandle(t.handle, beh) && (t.text || "").length > 4);
+    const hisReply = all.find((t) => !isMyHandle(t.handle, beh) && (t.text || "").length > 2)
+                  || all.find((t) => !isMyHandle(t.handle, beh));
+
+    // 找不到别人说的话 → 说明没落到回复页，回通知页重试
+    if (!hisReply) {
+      await logAct("通知详情里没找到对方的回复，回通知页", "skip");
       ctx.phase = "notif"; await gotoNotifications(); saveCtx(ctx); return;
     }
+
+    // 组装给生成器的「帖子」对象：正文 = 他的回复，附上我的原帖作为上下文
+    const post = {
+      ...hisReply,
+      handle: hisReply.handle,
+      text: hisReply.text,
+      // 我的原帖正文（兜底用通知卡片里摘到的那句）
+      ctxMyPost: (minePost && minePost.text) || ctx.current?.notifText || "",
+      ctxReply: hisReply.text,
+    };
+    await logAct(`回复 @${post.handle}：他回「${norm(post.ctxReply).slice(0, 40)}」` +
+      (post.ctxMyPost ? ` · 我的原帖「${norm(post.ctxMyPost).slice(0, 30)}」` : ""), "judge");
+
     if ((await budgetLeft("reply", beh.limits.reply)) > 0) {
-      const gen = await COMMENT_GEN.generate(await withAntiRepeat(post), beh, beh.llm);
+      const gen = await COMMENT_GEN.generate(
+        { ...(await withAntiRepeat(post)), ctxMyPost: post.ctxMyPost, ctxReply: post.ctxReply },
+        beh, beh.llm);
       const text = (gen.text || "").trim();
       if (text) {
         const r = await replyCurrent(text, beh);
@@ -1342,15 +1505,15 @@
           ctx.stats.commented++; await addEvent("reply");
           await withStore((s) => {
             s.replied[ctx.current.id] = { at: new Date().toISOString(), text: text.slice(0, 120), via: "notification" };
-          noteComment(text);
           });
+          noteComment(text);
           await recordTweet(post, { comment: text.slice(0, 120), via: "notification" });
-          await logAct(`✓ 回复 @${post.handle || ctx.current.handle}：${text.slice(0, 40)}`);
+          await logAct(`✓ 回复 @${post.handle || ctx.current.handle}：${text}（${text.length} 字）`, "cmt");
         } else {
-          await logAct(`✗ 回复失败：${r.error}`);
+          await logAct(`✗ 回复失败：${r.error}`, "fail");
         }
       } else {
-        await logAct(`跳过：没有合格回应（${gen.error || "空"}）`);
+        await logAct(`跳过：没有合格回应（${gen.error || "空"}）`, "skip");
       }
     }
     ctx.phase = "notif";
