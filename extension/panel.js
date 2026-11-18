@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const FIELDS = ["session_minutes", "typing_ms", "like_prob", "comment_prob",
+                "explore_prob",
                 "expand_prob", "bookmark_prob", "follow_per_session", "tone", "style",
                 "llm_key", "llm_model", "max_like", "max_reply", "max_follow"];
 
@@ -18,8 +19,8 @@ async function sendCmd(op) {
 }
 
 const DEFAULTS = {
-  session_minutes: 30, typing_ms: 130, like_prob: 0.85, comment_prob: 0.8,
-  expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 5,
+  session_minutes: 30, typing_ms: 130, like_prob: 0.85, comment_prob: 0.85,
+  expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 5, explore_prob: 0.5,
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,
@@ -39,7 +40,7 @@ async function saveSettings() {
     const el = $(f);
     if (!el) continue;
     const raw = el.value;
-    s[f] = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob"].includes(f)
+    s[f] = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob"].includes(f)
       ? Math.max(0, Math.min(1, parseFloat(raw) || 0)) : raw;
   }
   s.notif_enabled = $("notif_enabled").checked;

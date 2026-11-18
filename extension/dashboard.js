@@ -3,13 +3,13 @@
 const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "typing_ms", "follow_per_session",
              "max_like", "max_reply", "max_follow"];
-const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob"];
+const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob"];
 const TEXT = ["tone", "style", "feed", "llm_key", "llm_base", "llm_model"];
 const FIELDS = [...NUM, ...PROB, ...TEXT, "speed"];
 
 const DEFAULTS = {
   session_minutes: 30, typing_ms: 130, speed: 1.5, feed: "for_you",
-  like_prob: 0.85, comment_prob: 0.8,
+  like_prob: 0.85, comment_prob: 0.85, explore_prob: 0.5,
   expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 5,
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
@@ -129,7 +129,7 @@ function renderRecords(s) {
   }).join("") || '<tr><td colspan="4" style="color:#71767b">还没有留档。跑一轮会话后这里会有内容。</td></tr>';
 }
 
-const PHASE_CN = { home: "浏览时间线", detail: "详情页互动", profile: "作者主页评估",
+const PHASE_CN = { home: "浏览时间线", explore: "发现页找用户", detail: "详情页互动", profile: "作者主页浏览",
                    notif: "看通知", notif_reply: "回复通知" };
 
 function renderNow(s, running) {
@@ -144,10 +144,15 @@ function renderNow(s, running) {
   el.innerHTML = n.text
     ? `${badge} <b>@${esc(n.handle || "?")}</b>${cat}<div class="txt" style="margin-top:4px">${esc(n.text)}</div>`
     : `${badge} 正在翻页/等待加载…`;
-  // 最近 3 条活动直接放在视窗下面，不用切日志页
-  const acts = (s.activity || []).slice(-3);
+  // 全部历史放进可滑动区域；贴底时自动跟随，往上翻看历史时不打扰
+  const acts = s.activity || [];
+  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
   feed.innerHTML = acts.map((a) =>
-    `<div style="color:#71767b">[${esc(a.at)}] ${esc(a.msg.slice(0, 90))}</div>`).join("");
+    `<div style="color:#71767b;padding:1px 0">[${esc(a.at)}] ${esc(a.msg)}</div>`).join("");
+  if (nearBottom || feed.dataset.init !== "1") {
+    feed.scrollTop = feed.scrollHeight;
+    feed.dataset.init = "1";
+  }
 }
 
 function renderLog(s) {

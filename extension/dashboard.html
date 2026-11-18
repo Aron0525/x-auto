@@ -107,6 +107,8 @@
           <div class="row"><label>展开概率</label><input type="number" id="expand_prob" min="0" max="1" step="0.05"></div>
           <div class="row"><label>点赞概率</label><input type="number" id="like_prob" min="0" max="1" step="0.05"></div>
           <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>发现页概率</label><input type="number" id="explore_prob" min="0" max="1" step="0.05">
+            <span style="color:#71767b">发现页遇到可关注用户时进主页查看的概率</span></div>
           <div class="row"><label>收藏概率</label><input type="number" id="bookmark_prob" min="0" max="1" step="0.05"></div>
           <div class="row"><label>每轮关注≤</label><input type="number" id="follow_per_session" min="0" max="5"></div>
           <div class="row"><label>语气</label>
@@ -136,7 +138,8 @@
         <div class="card">
           <h2>实时视窗（正在读什么）</h2>
           <div id="nowView" style="min-height:44px;color:#71767b">空闲中——点「开始一轮」后这里显示当前正在读的帖子。</div>
-          <div id="nowFeed" style="margin-top:6px;font-size:12px"></div>
+          <div style="color:#71767b;font-size:12px;margin-top:6px">全部历史活动（可上下滑动查看）</div>
+          <div id="nowFeed" style="font-size:12px;max-height:260px;overflow-y:auto;border-top:1px solid #2f3336;padding-top:6px"></div>
         </div>
         <div class="card">
           <h2>会话统计（当前 / 最近一轮）</h2>
