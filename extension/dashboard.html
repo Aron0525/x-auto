@@ -39,13 +39,31 @@
     border: 1px solid #38444d; border-radius: 6px; padding: 5px 9px; min-width: 0; }
   input[type=checkbox] { accent-color: #1d9bf0; }
   .statbar { display: flex; flex-wrap: wrap; gap: 8px; }
-  .stat { background: #1e2732; border-radius: 10px; padding: 8px 14px; min-width: 110px; }
+  .stat { background: #1e2732; border-radius: 10px; padding: 8px 14px; min-width: 110px;
+          border: 1px solid transparent; transition: .12s; }
+  .stat.click { cursor: pointer; }
+  .stat.click:hover { border-color: #1d9bf0; background: #223141; }
+  .stat.click::after { content: " ›"; color: #536471; font-size: 11px; }
+  .stat.on { border-color: #1d9bf0; background: #1c2b3a; }
   .stat b { font-size: 18px; display: block; }
   .stat span { font-size: 11px; color: #71767b; }
   .bar { height: 4px; background: #2f3336; border-radius: 2px; margin-top: 6px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: #1d9bf0; }
   #log { background: #0d141a; border-radius: 8px; padding: 10px; height: 420px;
          overflow-y: auto; font: 12px/1.7 Consolas, "Courier New", monospace; white-space: pre-wrap; }
+  /* 日志分类配色 */
+  .lg-like   { color: #f9158b; }
+  .lg-cmt    { color: #1d9bf0; }
+  .lg-follow { color: #ffd400; }
+  .lg-skip   { color: #71767b; }
+  .lg-fail   { color: #f4212e; }
+  .lg-read   { color: #d6d9db; }
+  .lg-judge  { color: #aab8c2; }
+  .lg-nav    { color: #7856ff; }
+  .lg-wait   { color: #c9a227; font-style: italic; }
+  .lg-ok     { color: #00ba7c; }
+  .lg-info   { color: #8b98a5; }
+  .lgt { color: #536471; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   th { text-align: left; color: #71767b; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid #2f3336; position: sticky; top: 0; background: #15202a; }
   td { padding: 7px 8px; border-bottom: 1px solid #1e2732; vertical-align: top; }
@@ -64,6 +82,33 @@
   .help code { background: #0d141a; border-radius: 4px; padding: 1px 6px; font-size: 12px; color: #e7e9ea; }
   .help ul { padding-left: 20px; }
   .kbd { border: 1px solid #38444d; border-radius: 4px; padding: 0 5px; }
+
+  /* 统计详情抽屉 */
+  #drill { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+           align-items: center; justify-content: center; z-index: 30; }
+  #drill.open { display: flex; }
+  #drillBox { background: #15202a; border: 1px solid #2f3336; border-radius: 14px; width: min(900px, 92vw);
+              max-height: 84vh; display: flex; flex-direction: column; overflow: hidden;
+              box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  #drillHead { display: flex; align-items: center; gap: 10px; padding: 14px 18px;
+               border-bottom: 1px solid #2f3336; }
+  #drillHead h3 { margin: 0; font-size: 15px; }
+  #drillHead .sub { color: #71767b; font-size: 12px; }
+  #drillBody { overflow-y: auto; padding: 12px 18px 18px; }
+  .drow { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid #1e2732; align-items: flex-start; }
+  .drow .t { color: #536471; font-size: 11px; width: 74px; flex: none; font-family: Consolas, monospace; }
+  .drow .c { flex: 1; min-width: 0; }
+  .drow .m { color: #8899a6; font-size: 12px; margin-top: 2px; word-break: break-word; }
+  .empty { color: #71767b; padding: 26px 0; text-align: center; }
+
+  /* 布局：主区改成响应式三栏 */
+  .cols { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(0,1fr); gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .row .hint { color: #71767b; font-size: 11px; flex: 1; min-width: 0; }
+  .row label { width: 104px; }
+  .sec-title { font-size: 12px; color: #1d9bf0; margin: 14px 0 4px; font-weight: 600;
+               border-top: 1px solid #2f3336; padding-top: 12px; }
+  .sec-title:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 </style>
 </head>
 <body>
@@ -88,37 +133,60 @@
 <main>
   <!-- 控制面板 -->
   <section id="sec-ctrl" class="cur">
+    <!-- 顶部：额度 + 统计，全部可点 -->
     <div class="card">
-      <h2>今日额度</h2>
+      <h2>今日额度 <span style="color:#71767b;font-size:11px;font-weight:400">点任意一项查看具体做了什么</span></h2>
       <div class="statbar" id="quota"></div>
     </div>
-    <div class="grid">
+    <div class="card">
+      <h2>会话统计（当前 / 最近一轮） <span style="color:#71767b;font-size:11px;font-weight:400">点开看明细</span></h2>
+      <div class="statbar" id="sessStats"></div>
+    </div>
+
+    <div class="cols">
+      <!-- 左列：参数 -->
       <div>
         <div class="card">
-          <h2>行为参数（SOP）</h2>
-          <div class="row"><label>会话分钟</label><input type="number" id="session_minutes" min="5" max="60"></div>
-          <div class="row"><label>打字 ms/字</label><input type="number" id="typing_ms" min="50" max="500"></div>
+          <h2>行为参数</h2>
+
+          <div class="sec-title">节奏</div>
+          <div class="row"><label>会话分钟</label><input type="number" id="session_minutes" min="5" max="60">
+            <span class="hint">一轮跑多久</span></div>
+          <div class="row"><label>打字 ms/字</label><input type="number" id="typing_ms" min="50" max="500">
+            <span class="hint">每字符间隔，130 ≈ 真人速度</span></div>
           <div class="row"><label>速度系数</label><input type="number" id="speed" min="0.5" max="3" step="0.1">
-            <span style="color:#71767b">1=原速 · 1.5=慢一半 · 2=慢一倍</span></div>
-          <div class="row"><label>首页 Feed</label>
-            <select id="feed">
-              <option value="for_you">For You（推荐）</option><option value="following">Following（关注）</option>
-            </select></div>
-          <div class="row"><label>展开概率</label><input type="number" id="expand_prob" min="0" max="1" step="0.05"></div>
-          <div class="row"><label>点赞概率</label><input type="number" id="like_prob" min="0" max="1" step="0.05"></div>
-          <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05"></div>
+            <span class="hint">1=原速 · 1.5=慢一半</span></div>
+
+          <div class="sec-title">评论</div>
           <div class="row"><label>评论规则</label>
             <select id="comment_rule">
               <option value="mine">我的规则（短评·13字左右·上限20字）</option>
               <option value="sop">原 SOP 规则（严格校验）</option>
-            </select>
-            <span style="color:#71767b">我的规则：什么帖子都能评，只卡 20 字上限</span></div>
-          <div class="row"><label>评论文数</label><input type="number" id="comment_target_len" min="5" max="20">
-            <span style="color:#71767b">我的规则下目标字数，实际在 ±5 内随机（硬上限 20）</span></div>
-          <div class="row"><label>发现页概率</label><input type="number" id="explore_prob" min="0" max="1" step="0.05">
-            <span style="color:#71767b">发现页遇到可关注用户时进主页查看的概率</span></div>
+            </select></div>
+          <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05">
+            <span class="hint">每条帖子被评论的概率</span></div>
+          <div class="row"><label>目标字数</label><input type="number" id="comment_target_len" min="5" max="20">
+            <span class="hint">实际在 ±5 内随机，硬上限 20</span></div>
+          <div class="row"><label>评论去重</label><input type="checkbox" id="dedup_comment">
+            <span class="hint">同一帖只回一次</span></div>
+
+          <div class="sec-title">互动</div>
+          <div class="row"><label>点赞概率</label><input type="number" id="like_prob" min="0" max="1" step="0.05"></div>
           <div class="row"><label>收藏概率</label><input type="number" id="bookmark_prob" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>展开概率</label><input type="number" id="expand_prob" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>展开字数门槛</label><input type="number" id="expand_char_min" min="0" max="2000" step="10">
+            <span class="hint">正文超此字数就点进详情细看</span></div>
+
+          <div class="sec-title">关注 / 发现</div>
+          <div class="row"><label>发现页概率</label><input type="number" id="explore_prob" min="0" max="1" step="0.05">
+            <span class="hint">发现页遇可关注用户时进主页的比例</span></div>
           <div class="row"><label>每轮关注≤</label><input type="number" id="follow_per_session" min="0" max="5"></div>
+
+          <div class="sec-title">其他</div>
+          <div class="row"><label>首页 Feed</label>
+            <select id="feed">
+              <option value="for_you">For You（推荐）</option><option value="following">Following（关注）</option>
+            </select></div>
           <div class="row"><label>语气</label>
             <select id="tone">
               <option value="friendly">随和</option><option value="professional">专业</option>
@@ -128,26 +196,28 @@
           <div class="row"><label>长度档</label>
             <select id="style">
               <option value="short">短（10~25字）</option><option value="normal">正常（20~60字）</option><option value="detailed">详细（60~120字）</option>
-            </select></div>
+            </select>
+            <span class="hint">仅原 SOP 规则用</span></div>
           <div class="row"><label>处理通知</label><input type="checkbox" id="notif_enabled">
-            <span style="color:#71767b">开会话先花 20% 时间回通知</span></div>
+            <span class="hint">会话先花 20% 时间回通知</span></div>
         </div>
+
         <div class="card">
           <h2>SOP 判定参数（高级）</h2>
-          <div class="row"><label>评论去重</label><input type="checkbox" id="dedup_comment">
-            <span style="color:#71767b">同一帖只回一次（关掉可能重复评同一帖）</span></div>
-          <div class="row"><label>点赞概率上限</label><input type="number" id="like_prob_cap" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>点赞概率上限</label><input type="number" id="like_prob_cap" min="0" max="1" step="0.05">
+            <span class="hint">质量加权后不超过此值</span></div>
           <div class="row"><label>评论概率上限</label><input type="number" id="comment_prob_cap" min="0" max="1" step="0.05"></div>
-          <div class="row"><label>展开字数门槛</label><input type="number" id="expand_char_min" min="0" max="2000" step="10">
-            <span style="color:#71767b">正文超过这个字数就点进详情页细看</span></div>
-          <div class="row"><label>写操作间隔下限</label><input type="number" id="write_gap_min" min="5" max="600">
-            <span style="color:#71767b">秒；两次评论之间的最小间隔</span></div>
-          <div class="row"><label>写操作间隔上限</label><input type="number" id="write_gap_max" min="5" max="900">
-            <span style="color:#71767b">秒；实际间隔在这个区间随机</span></div>
-          <div class="row"><label>重点关键词</label><input type="text" id="focus_keywords">
-            <span style="color:#71767b">逗号分隔，命中加分（默认：股市/AI/半导体/经济）</span></div>
+          <div class="row"><label>写间隔下限</label><input type="number" id="write_gap_min" min="5" max="600">
+            <span class="hint">秒；两次评论最小间隔</span></div>
+          <div class="row"><label>写间隔上限</label><input type="number" id="write_gap_max" min="5" max="900">
+            <span class="hint">秒；实际在此区间随机</span></div>
+          <div class="row"><label>重点关键词</label><input type="text" id="focus_keywords"
+            placeholder="股市,AI,半导体,经济">
+            <span class="hint">逗号分隔，命中加分</span></div>
         </div>
       </div>
+
+      <!-- 右列：LLM / 额度 / 视窗 / 维护 -->
       <div>
         <div class="card">
           <h2>LLM 与每日上限</h2>
@@ -161,30 +231,47 @@
         <div class="card">
           <h2>实时视窗（正在读什么）</h2>
           <div id="nowView" style="min-height:44px;color:#71767b">空闲中——点「开始一轮」后这里显示当前正在读的帖子。</div>
-          <div style="color:#71767b;font-size:12px;margin-top:6px">全部历史活动（可上下滑动查看）</div>
-          <div id="nowFeed" style="font-size:12px;max-height:260px;overflow-y:auto;border-top:1px solid #2f3336;padding-top:6px"></div>
-        </div>
-        <div class="card">
-          <h2>会话统计（当前 / 最近一轮）</h2>
-          <div class="statbar" id="sessStats"></div>
+          <div style="color:#71767b;font-size:12px;margin-top:8px">全部历史活动（可上下滑动）</div>
+          <div id="nowFeed" style="font-size:12px;max-height:280px;overflow-y:auto;border-top:1px solid #2f3336;padding-top:6px;margin-top:4px"></div>
         </div>
         <div class="card">
           <h2>维护</h2>
-          <div class="row">
-            <button id="save" class="ghost">保存设置</button>
+          <div class="row" style="flex-wrap:wrap">
+            <button id="save">保存设置</button>
             <button id="reinject" class="ghost">重新注入</button>
             <button id="export" class="ghost">导出全部记录</button>
           </div>
-          <p style="color:#71767b;margin:8px 0 0">注入是<b>自动</b>的：标签页加载、扩展重载、浏览器重启都会自动补注入，正常使用不需要点这个按钮。它只是手动兜底。</p>
+          <p style="color:#71767b;margin:8px 0 0;font-size:11px">注入是<b>自动</b>的：页面加载、扩展重载、浏览器重启都会自动补。这个按钮只是手动兜底。</p>
         </div>
       </div>
     </div>
   </section>
 
+  <!-- 统计详情抽屉 -->
+  <div id="drill">
+    <div id="drillBox">
+      <div id="drillHead">
+        <h3 id="drillTitle">明细</h3>
+        <span class="sub" id="drillSub"></span>
+        <div style="flex:1"></div>
+        <button id="drillClose" class="ghost">关闭</button>
+      </div>
+      <div id="drillBody"></div>
+    </div>
+  </div>
+
   <!-- 帖子留档 -->
   <section id="sec-rec">
-    <div class="row" style="margin-bottom:10px">
+    <div class="row" style="margin-bottom:10px;flex-wrap:wrap">
       <input type="text" id="recFilter" placeholder="筛选：作者 / 关键词…">
+      <select id="recAct">
+        <option value="">全部动作</option>
+        <option value="comment">只看评论</option>
+        <option value="like">只看点赞</option>
+        <option value="follow">只看关注</option>
+        <option value="bookmark">只看收藏</option>
+        <option value="skip">只看滑过</option>
+      </select>
       <span id="recCount" style="color:#71767b"></span>
     </div>
     <div id="recWrap">
@@ -197,7 +284,23 @@
 
   <!-- 活动日志 -->
   <section id="sec-log">
-    <div class="row" style="margin-bottom:10px">
+    <div class="row" style="margin-bottom:10px;flex-wrap:wrap;gap:6px">
+      <select id="logKind">
+        <option value="">全部类型</option>
+        <option value="read">读帖</option>
+        <option value="judge">判定</option>
+        <option value="like">点赞</option>
+        <option value="cmt">评论</option>
+        <option value="follow">关注</option>
+        <option value="skip">滑过</option>
+        <option value="fail">失败</option>
+        <option value="nav">导航</option>
+        <option value="wait">等待/加载</option>
+      </select>
+      <span style="color:#71767b;font-size:11px">图例：</span>
+      <span class="lg-like">点赞</span><span class="lg-cmt">评论</span><span class="lg-follow">关注</span>
+      <span class="lg-skip">滑过</span><span class="lg-fail">失败</span><span class="lg-read">读帖</span>
+      <span class="lg-judge">判定</span><span class="lg-nav">导航</span><span class="lg-wait">等待</span>
       <button id="clearLog" class="ghost" style="margin-left:auto">清空显示</button>
     </div>
     <div id="log">（还没有活动）</div>

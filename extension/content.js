@@ -503,13 +503,36 @@
     _storeLock = run.catch(() => {});
     return run;
   }
-  async function logAct(msg) {
+  /* 活动日志：msg 给人看，kind 给 UI 上色/分类用。
+   * kind: read 读到帖子 / judge 判定 / like 赞成功 / cmt 评论成功 / bm 收藏 /
+   *       follow 关注 / skip 滑过 / fail 失败 / nav 导航切换 / wait 等待加载 / info 一般 */
+  async function logAct(msg, kind) {
     await withStore((s) => {
-      s.activity.push({ at: new Date().toLocaleTimeString(), msg });
+      s.activity.push({ at: new Date().toLocaleTimeString(), msg, kind: kind || guessKind(msg) });
       s.activity = s.activity.slice(-300);
     });
     send({ t: "ui-ping" }).catch(() => {});
   }
+
+  // 没显式传 kind 时按文案猜（老调用点不用全改）
+  function guessKind(m) {
+    const t = String(m || "");
+    if (t.startsWith("✓")) {
+      if (t.includes("评论")) return "cmt";
+      if (t.includes("赞")) return "like";
+      if (t.includes("关注")) return "follow";
+      return "ok";
+    }
+    if (t.startsWith("✗") || t.startsWith("⚠")) return "fail";
+    if (t.startsWith("滑过") || t.includes("跳过")) return "skip";
+    if (t.startsWith("读到")) return "read";
+    if (t.startsWith("判定")) return "judge";
+    if (/^(展开|收藏)/.test(t)) return "info";
+    if (/返回|首页|详情|主页|发现页|回顶|刷新|滚回|点顶部/.test(t)) return "nav";
+    if (/等待|加载|没出新帖|慢/.test(t)) return "wait";
+    return "info";
+  }
+
   async function countToday(kind) {
     const s = await storeGet();
     const today = new Date().toISOString().slice(0, 10);
@@ -655,7 +678,7 @@
     await sleep(rnd(1200, 5000) * SPD);        // 真人扫读停顿
 
     const [skip, why] = SOP.shouldSkip(tw, beh);
-    if (skip) { ctx.stats.skipped++; await logAct(`滑过：${why}`); await recordTweet(tw, { skip: why }); saveCtx(ctx); return; }
+    if (skip) { ctx.stats.skipped++; await logAct(`滑过：${why}`, "skip"); await recordTweet(tw, { skip: why }); saveCtx(ctx); return; }
 
     // 评论去重（面板可关）：同一帖只回一次，避免重复刷同一帖
     let doCmtGate = true, whyDedup = "";
@@ -673,7 +696,7 @@
     const open = expand || doCmt;
     ctx.plan = { expand: open, doLike, whyLike, doCmt, doBm };
     ctx.current = tw;
-    await logAct(`判定：${doLike ? "赞" : "不赞（" + whyLike + "）"} · ${doCmt ? "评" : "不评（" + whyCmt + "）"}${doBm ? " · 藏" : ""}${open ? " · 点开细看" : ""}`);
+    await logAct(`判定：${doLike ? "赞" : "不赞（" + whyLike + "）"} · ${doCmt ? "评" : "不评（" + whyCmt + "）"}${doBm ? " · 藏" : ""}${open ? " · 点开细看" : ""}`, "judge");
 
     if (!open) {
       let liked = false;
@@ -683,7 +706,7 @@
           liked = true;
           ctx.stats.liked++; await addEvent("like");
           await withStore((s) => { s.liked[tw.id] = { at: new Date().toISOString() }; });
-          await logAct(`✓ 赞（时间线）@${tw.handle}（按钮已变已赞态）`);
+          await logAct(`✓ 赞（时间线）@${tw.handle}（按钮已变已赞态）`, "like");
         } else if (ok === false) {
           await logAct(`✗ 赞（时间线）@${tw.handle}：按钮状态没翻转，没点到`);
         }
@@ -754,7 +777,7 @@
           likedDetail = true;
           ctx.stats.liked++; await addEvent("like");
           await withStore((s) => { s.liked[tw.id] = { at: new Date().toISOString() }; });
-          await logAct(`✓ 赞 @${post.handle}（详情页，按钮已变已赞态）`);
+          await logAct(`✓ 赞 @${post.handle}（详情页，按钮已变已赞态）`, "like");
         } else await logAct(`✗ 赞 @${post.handle}：按钮状态没翻转，没点到`);
       }
     }
@@ -772,7 +795,7 @@
             s.replied[tw.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
           });
           acts.comment = text.slice(0, 120);
-          await logAct(`✓ 评论 @${post.handle}：${text}（${text.length} 字）`);
+          await logAct(`✓ 评论 @${post.handle}：${text}（${text.length} 字）`, "cmt");
           await sleep(writeGap(beh));   // 写操作间隔：真人不会连发
         } else {
           await logAct(`✗ 评论失败：${r.error}`);
@@ -937,7 +960,7 @@
             await withStore((s) => {
               s.followed[handle] = { at: new Date().toISOString(), reason: "主页看过再关注" };
             });
-            await logAct(`✓ 关注 @${handle}（翻了 ${pool.length} 篇 + 赞 ${likedHere} 评 ${cmtHere} 后关注）`);
+            await logAct(`✓ 关注 @${handle}（翻了 ${pool.length} 篇 + 赞 ${likedHere} 评 ${cmtHere} 后关注）`, "follow");
           } else {
             await logAct(`✗ @${handle} 关注未生效（按钮没翻转）`);
           }

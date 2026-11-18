@@ -76,10 +76,13 @@ function flash(msg, cls) {
 
 // ---------------- 渲染 ----------------
 
-function stat(label, value, used, cap, color) {
+function stat(label, value, used, cap, color, drillKey) {
   const pct = cap > 0 ? Math.min(100, (used / cap) * 100) : 0;
   const full = cap > 0 && used >= cap;
-  return `<div class="stat"><b style="color:${full ? "#f9158b" : (color || "#e7e9ea")}">${value}</b>
+  const cls = "stat" + (drillKey ? " click" : "");
+  return `<div class="${cls}" ${drillKey ? `data-drill="${drillKey}"` : ""}
+             title="${drillKey ? "点开看具体记录" : ""}">
+    <b style="color:${full ? "#f9158b" : (color || "#e7e9ea")}">${value}</b>
     <span>${label}${cap ? ` · 上限 ${cap}` : ""}</span>
     <div class="bar"><i style="width:${pct}%;background:${full ? "#f9158b" : (color || "#1d9bf0")}"></i></div></div>`;
 }
@@ -93,21 +96,24 @@ function renderQuota(s, cfg) {
   const ev = s.events || [];
   const like = todayCount(ev, "like"), reply = todayCount(ev, "reply"), fl = todayCount(ev, "follow");
   $("quota").innerHTML =
-    stat("点赞", like, like, cfg.max_like, "#f9158b") +
-    stat("评论/回复", reply, reply, cfg.max_reply, "#1d9bf0") +
-    stat("关注", fl, fl, cfg.max_follow, "#ffd400") +
-    `<div class="stat"><b>${(s.records || []).length}</b><span>帖子留档条数</span></div>` +
-    `<div class="stat"><b>${Object.keys(s.replied || {}).length}</b><span>累计已回过的帖子</span></div>`;
+    stat("点赞", like, like, cfg.max_like, "#f9158b", "like") +
+    stat("评论/回复", reply, reply, cfg.max_reply, "#1d9bf0", "reply") +
+    stat("关注", fl, fl, cfg.max_follow, "#ffd400", "follow") +
+    `<div class="stat click" data-drill="records"><b>${(s.records || []).length}</b>
+       <span>帖子留档条数</span></div>` +
+    `<div class="stat click" data-drill="replied"><b>${Object.keys(s.replied || {}).length}</b>
+       <span>累计已回过的帖子</span></div>`;
 }
 
 function renderSess(st) {
   if (!st) { $("sessStats").innerHTML = '<span style="color:#71767b">还没跑过会话</span>'; return; }
-  const cell = (l, v, c) => `<div class="stat"><b style="color:${c || "#e7e9ea"}">${v}</b><span>${l}</span></div>`;
+  const cell = (l, v, c, k) =>
+    `<div class="stat click" data-drill="sess:${k}"><b style="color:${c || "#e7e9ea"}">${v}</b><span>${l}</span></div>`;
   $("sessStats").innerHTML =
-    cell("读帖", st.read) + cell("展开", st.expanded) +
-    cell("点赞", st.liked, "#f9158b") + cell("评论", st.commented, "#1d9bf0") +
-    cell("收藏", st.bookmarked, "#00ba7c") + cell("关注", st.followed, "#ffd400") +
-    cell("滑过", st.skipped, "#71767b");
+    cell("读帖", st.read || 0, "", "read") + cell("展开", st.expanded || 0, "", "expanded") +
+    cell("点赞", st.liked || 0, "#f9158b", "liked") + cell("评论", st.commented || 0, "#1d9bf0", "commented") +
+    cell("收藏", st.bookmarked || 0, "#00bc7c", "bookmarked") + cell("关注", st.followed || 0, "#ffd400", "followed") +
+    cell("滑过", st.skipped || 0, "#71767b", "skipped");
 }
 
 const ACT_BADGE = { like: ["赞", "b-like"], comment: ["评", "b-cmt"], bookmark: ["藏", "b-bm"],
@@ -120,7 +126,9 @@ function esc(t) {
 
 function renderRecords(s) {
   const q = ($("recFilter").value || "").trim().toLowerCase();
+  const act = ($("recAct") ? $("recAct").value : "") || "";
   const rows = (s.records || []).slice().reverse().filter((r) => {
+    if (act && !(r.actions && r.actions[act])) return false;
     if (!q) return true;
     return ((r.handle || "") + " " + (r.author || "") + " " + (r.text || "")).toLowerCase().includes(q);
   }).slice(0, 400);
@@ -144,6 +152,12 @@ function renderRecords(s) {
 const PHASE_CN = { home: "浏览时间线", explore: "发现页找用户", detail: "详情页互动", profile: "作者主页浏览",
                    notif: "看通知", notif_reply: "回复通知" };
 
+// 日志分类 → 中文标签（和 content.js 的 guessKind 对应）
+const KIND_CN = { like: "点赞", cmt: "评论", follow: "关注", skip: "滑过", fail: "失败",
+                  read: "读帖", judge: "判定", nav: "导航", wait: "等待", ok: "成功", info: "信息" };
+
+function kindColor(k) { return "lg-" + (KIND_CN[k] ? k : "info"); }
+
 function renderNow(s, running) {
   const el = $("nowView"), feed = $("nowFeed");
   if (!running) {
@@ -160,7 +174,8 @@ function renderNow(s, running) {
   const acts = s.activity || [];
   const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
   feed.innerHTML = acts.map((a) =>
-    `<div style="color:#71767b;padding:1px 0">[${esc(a.at)}] ${esc(a.msg)}</div>`).join("");
+    `<div class="${kindColor(a.kind)}" style="padding:1px 0">
+       <span class="lgt">[${esc(a.at)}]</span> ${esc(a.msg)}</div>`).join("");
   if (nearBottom || feed.dataset.init !== "1") {
     feed.scrollTop = feed.scrollHeight;
     feed.dataset.init = "1";
@@ -170,11 +185,96 @@ function renderNow(s, running) {
 function renderLog(s) {
   const el = $("log");
   const keep = el.scrollTop;
-  el.textContent = (s.activity || []).map((a) => `[${a.at}] ${a.msg}`).join("\n") || "（还没有活动）";
-  if (el.dataset.follow === "1" || Math.abs(keep + el.clientHeight - el.scrollHeight) < 60)
-    el.scrollTop = el.scrollHeight;
-  el.dataset.follow = Math.abs(keep + el.clientHeight - el.scrollHeight) < 60 ? "1" : "0";
+  const follow = el.dataset.follow === "1" || Math.abs(keep + el.clientHeight - el.scrollHeight) < 60;
+  const want = ($("logKind") ? $("logKind").value : "") || "";
+  const acts = (s.activity || []).filter((a) => !want || a.kind === want);
+  el.innerHTML = acts.length
+    ? acts.map((a) => `<div class="${kindColor(a.kind)}"><span class="lgt">[${esc(a.at)}]</span> ${esc(a.msg)}</div>`).join("")
+    : `<span style="color:#71767b">（${want ? "没有该类型的活动" : "还没有活动"}）</span>`;
+  el.dataset.follow = follow ? "1" : "0";
+  if (follow) el.scrollTop = el.scrollHeight;
 }
+
+// ---------------- 统计详情抽屉（点数字看具体做了什么）----------------
+
+const DRILL_META = {
+  like:   { title: "今日点赞", color: "b-like", field: "like" },
+  reply:  { title: "今日评论/回复", color: "b-cmt", field: "reply" },
+  follow: { title: "今日关注", color: "b-fl", field: "follow" },
+};
+
+async function openDrill(key) {
+  const d = await chrome.storage.local.get(["xa_state"]);
+  const s = d.xa_state || {};
+  const recs = s.records || [], acts = s.activity || [];
+  const me = key.startsWith("sess:") ? key.slice(5) : key;
+  const box = $("drillBody");
+  let title = "明细", sub = "", html = "";
+
+  const rowPost = (r) => {
+    const href = r.href ? (/^https?:/.test(r.href) ? r.href : "https://x.com" + r.href) : "";
+    const link = href ? `<a class="lnk" href="${esc(href)}" target="_blank">@${esc(r.handle || "?")}</a>`
+                      : `<b>@${esc(r.handle || "?")}</b>`;
+    return `<div class="drow"><div class="t">${esc(r.at || "")}</div><div class="c">
+      <div>${link} ${esc((r.author || "").slice(0, 40))}</div>
+      <div class="m">${esc((r.text || "").slice(0, 220)) || "（无文字）"}</div>
+      ${r.actions && r.actions.comment ? `<div class="m" style="color:#1d9bf0">评论：${esc(r.actions.comment)}</div>` : ""}
+      ${r.actions && r.actions.skip ? `<div class="m" style="color:#71767b">跳过原因：${esc(r.actions.skip)}</div>` : ""}
+    </div></div>`;
+  };
+
+  if (DRILL_META[me]) {
+    const m = DRILL_META[me];
+    title = m.title;
+    // 今日事件 → 找对应帖子留档
+    const t = new Date().toISOString().slice(0, 10);
+    const evs = (s.events || []).filter((e) => e.kind === me && (e.at || "").startsWith(t));
+    sub = `今天 ${evs.length} 条`;
+    const hit = recs.filter((r) => r.actions &&
+      (me === "like" ? r.actions.like : me === "reply" ? r.actions.comment : r.actions.follow)).reverse();
+    html = hit.length ? hit.slice(0, 200).map(rowPost).join("")
+                      : '<div class="empty">今天还没有这类记录。</div>';
+  } else if (me === "records") {
+    title = "帖子留档"; sub = `共 ${recs.length} 条`;
+    html = recs.length ? recs.slice().reverse().slice(0, 300).map(rowPost).join("")
+                       : '<div class="empty">还没有留档。</div>';
+  } else if (me === "replied") {
+    title = "累计已回过的帖子"; sub = `共 ${Object.keys(s.replied || {}).length} 帖`;
+    const ks = Object.keys(s.replied || {}).reverse();
+    html = ks.length ? ks.slice(0, 300).map((id) => {
+      const v = s.replied[id] || {};
+      const r = recs.find((x) => x.id === id) || {};
+      return `<div class="drow"><div class="t">${esc((v.at || "").slice(11, 19))}</div><div class="c">
+        <div><b>@${esc(r.handle || "?")}</b>
+          <a class="lnk" href="https://x.com/i/status/${esc(id)}" target="_blank">原帖 ›</a></div>
+        <div class="m">${esc((r.text || "").slice(0, 180))}</div>
+        <div class="m" style="color:#1d9bf0">我回的：${esc(v.text || "")}</div></div></div>`;
+    }).join("") : '<div class="empty">还没有回过帖。</div>';
+  } else {
+    // 会话统计各格
+    const label = { read: "读帖", expanded: "展开", liked: "点赞", commented: "评论",
+                    bookmarked: "收藏", followed: "关注", skipped: "滑过" }[me] || me;
+    title = `本轮${label}`;
+    const kindMap = { read: "read", expanded: "read", liked: "like", commented: "cmt",
+                      bookmarked: "info", followed: "follow", skipped: "skip" };
+    const k = kindMap[me] || me;
+    const hit = acts.filter((a) => a.kind === k);
+    sub = `共 ${hit.length} 条活动`;
+    html = hit.length ? hit.slice().reverse().map((a) =>
+      `<div class="drow"><div class="t">${esc(a.at)}</div>
+         <div class="c"><div class="${kindColor(a.kind)}">${esc(a.msg)}</div></div></div>`).join("")
+      : `<div class="empty">本轮还没有「${label}」记录。` +
+        `<div style="margin-top:8px;font-size:12px">说明：活动日志只保留最近 300 条，` +
+        `更早的明细可以在「帖子留档」里按动作筛选。</div></div>`;
+  }
+
+  $("drillTitle").textContent = title;
+  $("drillSub").textContent = sub;
+  box.innerHTML = html;
+  $("drill").classList.add("open");
+}
+
+function closeDrill() { $("drill").classList.remove("open"); }
 
 // ---------------- 刷新 ----------------
 
@@ -307,7 +407,26 @@ $("reinject").onclick = reinject;
 $("export").onclick = exportRecords;
 $("openX").onclick = () => chrome.tabs.create({ url: "https://x.com/home" });
 $("recFilter").oninput = () => refresh();
+$("recAct").onchange = () => refresh();
+$("logKind").onchange = () => refresh();
 $("clearLog").onclick = () => { $("log").textContent = "（已清空显示，新的活动会继续进来）"; };
+
+// 统计卡片点开看明细（事件委托：卡片是 refresh 动态重绘的）
+document.addEventListener("click", (e) => {
+  const cell = e.target.closest("[data-drill]");
+  if (!cell) return;
+  document.querySelectorAll(".stat.on").forEach((x) => x.classList.remove("on"));
+  cell.classList.add("on");
+  openDrill(cell.dataset.drill).catch((err) => {
+    $("drillTitle").textContent = "打开失败";
+    $("drillSub").textContent = String(err.message || err);
+    $("drillBody").innerHTML = '<div class="empty">读取记录失败，稍后再试。</div>';
+    $("drill").classList.add("open");
+  });
+});
+$("drillClose").onclick = closeDrill;
+$("drill").addEventListener("click", (e) => { if (e.target.id === "drill") closeDrill(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrill(); });
 
 loadSettings();
 refresh();
