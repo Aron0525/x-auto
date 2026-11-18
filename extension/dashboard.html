@@ -204,6 +204,8 @@
             <span class="hint">秒；两次评论最小间隔</span></div>
           <div class="row"><label>写间隔上限</label><input type="number" id="write_gap_max" min="5" max="900">
             <span class="hint">秒；实际在此区间随机</span></div>
+          <div class="row"><label>刷新前至少读</label><input type="number" id="min_read_before_refresh" min="1" max="100">
+            <span class="hint">篇；少于这个数不刷回顶部，避免反复刷同几条</span></div>
           <div class="row"><label>重点关键词</label><input type="text" id="focus_keywords"
             placeholder="股市,AI,半导体,经济">
             <span class="hint">逗号分隔，命中加分</span></div>

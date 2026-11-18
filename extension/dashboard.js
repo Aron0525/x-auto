@@ -3,7 +3,8 @@
 const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "typing_ms", "follow_per_session",
              "max_like", "max_reply", "max_follow",
-             "comment_target_len", "expand_char_min", "write_gap_min", "write_gap_max"];
+             "comment_target_len", "expand_char_min", "write_gap_min", "write_gap_max",
+             "min_read_before_refresh"];
 const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob",
               "like_prob_cap", "comment_prob_cap"];
 const TEXT = ["tone", "style", "feed", "llm_key", "llm_base", "llm_model",
@@ -17,6 +18,7 @@ const DEFAULTS = {
   comment_rule: "mine", comment_target_len: 13,
   like_prob_cap: 0.9, comment_prob_cap: 1, expand_char_min: 220,
   write_gap_min: 30, write_gap_max: 90, dedup_comment: true, focus_keywords: "",
+  min_read_before_refresh: 12,
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,

@@ -42,6 +42,8 @@
     navExplore: '[data-testid="AppTabBar_Explore_Link"]',
     showMore: '[data-testid="tweet-text-show-more-link"], [aria-label="Show more"]',
     newPostsBtn: '[aria-label="New posts"], [data-testid="floatingButton"], [data-testid="scrollToTopButton"]',
+    // 时间线顶部的「Show N posts」按钮（有新帖待加载时出现），点它直接拉新一批
+    showPostsBtn: '[data-testid="newTweetsPill"], [data-testid="pillButton"], button[aria-label*="posts"]',
   };
 
   const DISCARD_TEXTS = ["不保存", "放弃", "丢弃", "Discard", "Don't save"];
@@ -211,30 +213,50 @@
     return false;
   }
 
-  /* 时间线刷新与回顶（用户策略：帖子是无限流，新帖在上方，往下滑可能滑到旧帖）
-   * 两种情况：
-   *   a) 滚不出新帖（加载停滞）：等更久 → 触发刷新（重新拉取）→ 再等
-   *   b) 滑到旧帖区：优先点顶部蓝色「新帖」箭头回顶；没有就滚回顶部
-   * 返回 "refreshed" | "topped" | "timeout" 便于日志。 */
+  /* 时间线刷新与回顶（用户策略：帖子是无限流，新帖在上方，往下滑会滑到旧帖）
+   * 优先级（越靠前越像真人）：
+   *   1) 点顶部蓝色「新帖」箭头 / 「Show N posts」按钮 —— 用户明确要求用这个
+   *   2) 滚回时间线顶部
+   *   3) 都动不了就等
+   * 返回 "posts" | "topped" | "timeout"。 */
   async function refreshOrTop(reason) {
     const before = timelineSig();
-    // 优先点顶部蓝色「新帖」箭头：回顶 + 触发刷新，最贴近真人操作
+
+    // 1) 「Show N posts」/「新帖」按钮。按可见文案找，选择器会随 X 改版变。
+    const pill = [...document.querySelectorAll("button, div[role='button']")].find((el) => {
+      const t = (el.innerText || "").trim();
+      if (!t || t.length > 40) return false;
+      if (!/Show\s+\d+\s+posts?|显示\s*\d+\s*条|\d+\s*posts?|新帖子|新帖子?显示|new\s+posts?/i.test(t)) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;      // 必须是可见的
+    });
+    if (pill) {
+      const label = (pill.innerText || "").trim().slice(0, 24);
+      if (await clickEl(pill, { settle: [1500, 2600] })) {
+        await logAct(`${reason} → 点「${label}」拉新帖`, "nav");
+        await sleep(rnd(1200, 2200) * SPD);
+        if (await waitTimelineChange(before, 15000, "拉取新帖")) return "posts";
+        await sleep(rnd(4000, 8000) * SPD);
+        return "topped";
+      }
+    }
     const arrow = q(SEL.newPostsBtn);
     if (arrow && await clickEl(arrow, { settle: [1500, 2600] })) {
-      await logAct(`${reason} → 点顶部「新帖」箭头回顶刷新`);
+      await logAct(`${reason} → 点顶部「新帖」箭头回顶刷新`, "nav");
       await sleep(rnd(1200, 2200) * SPD);
-      if (await waitTimelineChange(before, 15000, "顶部刷新")) return "refreshed";
+      if (await waitTimelineChange(before, 15000, "顶部刷新")) return "posts";
       await sleep(rnd(4000, 8000) * SPD);
       return "topped";
     }
-    // 没有箭头 → 滚回时间线顶部等新批次
+
+    // 2) 没有按钮 → 滚回时间线顶部等新批次
     for (let i = 0; i < 8; i++) {
       await scrollBy(-2);
       await sleep(rnd(400, 800) * SPD);
       const top = q(SEL.article);
       if (!top || top.getBoundingClientRect().top < 80) break;
     }
-    await logAct(`${reason} → 滚回时间线顶部等新帖`);
+    await logAct(`${reason} → 滚回时间线顶部等新帖`, "nav");
     if (await waitTimelineChange(before, 15000, "顶部刷新")) return "topped";
     return "timeout";
   }
@@ -593,6 +615,8 @@
       expand_char_min: s.expand_char_min ?? 220,
       write_gap_min: s.write_gap_min ?? 30,
       write_gap_max: s.write_gap_max ?? 90,
+      // 至少读够多少篇才允许回顶刷新（防止反复刷同几条，看起来像脚本）
+      min_read_before_refresh: s.min_read_before_refresh ?? 12,
       dedup_comment: s.dedup_comment !== false,
       focus_keywords: s.focus_keywords || "",
       follow_per_session: s.follow_per_session ?? 5,
@@ -650,8 +674,19 @@
       if (await waitMoreArticles(before, 20000)) { ctx.scrollTries = 0; return; }
       ctx.scrollTries = (ctx.scrollTries || 0) + 1;
       if (ctx.scrollTries >= 2) {
-        await logAct("连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 回顶部找新帖");
+        // 【门槛】用户要求：至少读十几篇才刷新。
+        // 刚跑一两篇就回顶 = 反复刷同几条帖子，看起来最像脚本。
+        const readThisRun = ctx.homeReads || 0;
+        const MIN_READ = beh.min_read_before_refresh ?? 12;
+        if (readThisRun < MIN_READ) {
+          await logAct(`读到的都是旧帖，但本轮才读 ${readThisRun}/${MIN_READ} 篇 —— 继续往下翻，先不刷新`, "wait");
+          ctx.scrollTries = 0;
+          await sleep(rnd(3000, 6000) * SPD);
+          return;
+        }
+        await logAct("连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 回顶部拉新帖", "wait");
         await refreshOrTop("滑到旧帖区/加载停滞");
+        ctx.homeReads = 0;          // 刷过一轮，重新计数
         ctx.scrollTries = 0;
         await sleep(rnd(8000, 15000) * SPD);
       }
@@ -659,7 +694,35 @@
     }
     // 选帖策略：按质量加权（重点领域 > 互动帖 > 内容质量），不是无脑第一条
     fresh.forEach((t) => ctx.seen.push(t.id));
-    const tw = fresh.reduce((a, b) => (SOP.qualityScore(b) > SOP.qualityScore(a) ? b : a));
+
+    // 【硬规则】自己的帖子和自己发的回复一律不碰：
+    // 不点进去、不赞、不评。以前漏了这一步 → 在自己的回复下面回复自己，
+    // 一个号自己跟自己对话，平台最容易判定为刷量。
+    const me = (whoami() || "").toLowerCase();
+    if (!me && !ctx.warnedNoMe) {
+      ctx.warnedNoMe = true;
+      await logAct("⚠ 读不到自己的账号名（左侧头像链接没找到）——「跳过自己的帖子」这道保护暂时失效，建议刷新 x.com", "fail");
+    }
+    const mine = fresh.filter((t) => me && (t.handle || "").toLowerCase() === me);
+    const others = fresh.filter((t) => !me || (t.handle || "").toLowerCase() !== me);
+    if (mine.length && !others.length) {
+      ctx.stats.skipped += mine.length;
+      await logAct(`跳过我自己的 ${mine.length} 条帖/回复（不读不赞不评）`, "skip");
+      // 关键：不往下滚，否则会永远停在同一屏自己的帖子上打转
+      const beforeMine = document.querySelectorAll(SEL.article).length;
+      ctx.mineSkips = (ctx.mineSkips || 0) + 1;
+      await scrollBy(ri(1, 2));
+      await waitMoreArticles(beforeMine, 12000);
+      if (ctx.mineSkips >= 4) {          // 连续几屏都是自己的 → 回顶部换一批
+        ctx.mineSkips = 0;
+        await logAct("连续几屏都是自己的帖子 → 回顶部拉新一批", "nav");
+        await refreshOrTop("整屏都是自己的帖子");
+        ctx.homeReads = 0;
+      }
+      saveCtx(ctx); return;
+    }
+    ctx.mineSkips = 0;
+    const tw = others.reduce((a, b) => (SOP.qualityScore(b) > SOP.qualityScore(a) ? b : a));
     ctx.stats.read += 1;
     ctx.homeReads = (ctx.homeReads || 0) + 1;
 
@@ -770,6 +833,15 @@
     const detail = readTweets(3);
     const post = detail[0] || tw;
     post.handle = post.handle || tw.handle;
+
+    // 【兜底】进来才发现是自己的帖/回复 → 立刻退出，不做任何动作
+    const meHere = (whoami() || "").toLowerCase();
+    if (meHere && (post.handle || "").toLowerCase() === meHere) {
+      ctx.stats.skipped++;
+      await logAct(`跳过：这是我自己的帖子/回复（@${post.handle}），不互动`, "skip");
+      await recordTweet(post, { skip: "自己的帖子" });
+      ctx.phase = "home"; ctx.tabDone = false; await goHome(); saveCtx(ctx); return;
+    }
 
     const acts = {};
     let likedDetail = false;
@@ -1082,6 +1154,12 @@
     await sleep(rnd(800, 1600) * SPD);
     const detail = readTweets(3);
     const post = detail[0] || ctx.current;
+    // 兜底：通知回复也可能落到自己的帖子上
+    const meN = (whoami() || "").toLowerCase();
+    if (meN && (post.handle || "").toLowerCase() === meN) {
+      await logAct(`跳过通知回复：是我自己的帖子（@${post.handle}）`, "skip");
+      ctx.phase = "notif"; await gotoNotifications(); saveCtx(ctx); return;
+    }
     if ((await budgetLeft("reply", beh.limits.reply)) > 0) {
       const gen = await COMMENT_GEN.generate(post, beh, beh.llm);
       const text = (gen.text || "").trim();
