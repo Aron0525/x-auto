@@ -248,6 +248,16 @@
             <span class="hint">同一帖只回一次</span></div>
         </div>
         <div class="card">
+          <h2>我的账号（防止自己回自己）</h2>
+          <div class="row"><label>我的用户名</label>
+            <input type="text" id="my_handles" placeholder="johnJackyoi0f, 4395Aron">
+          </div>
+          <div class="row"><span class="hint">逗号分隔，不带 @。测试号和正式号<b>都填上</b>，
+            切换账号时也不会漏掉「跳过自己帖子」这道保护。</span></div>
+          <p style="color:#71767b;font-size:11px;margin:8px 0 0">
+            程序还会自动读取当前登录账号（左侧栏头像链接），两边取并集。</p>
+        </div>
+        <div class="card">
           <h2>每日上限</h2>
           <div class="row"><label>日赞上限</label><input type="number" id="max_like" min="0" max="200"></div>
           <div class="row"><label>日评上限</label><input type="number" id="max_reply" min="0" max="100"></div>

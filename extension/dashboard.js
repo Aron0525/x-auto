@@ -8,7 +8,7 @@ const NUM = ["session_minutes", "typing_ms", "follow_per_session",
 const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob",
               "like_prob_cap", "comment_prob_cap"];
 const TEXT = ["tone", "style", "feed", "llm_key", "llm_base", "llm_model",
-              "comment_rule", "focus_keywords"];
+              "comment_rule", "focus_keywords", "my_handles"];
 const FIELDS = [...NUM, ...PROB, ...TEXT, "speed"];
 
 const DEFAULTS = {
@@ -18,6 +18,7 @@ const DEFAULTS = {
   comment_rule: "mine", comment_target_len: 13,
   like_prob_cap: 0.9, comment_prob_cap: 1, expand_char_min: 220,
   write_gap_min: 30, write_gap_max: 90, dedup_comment: true, focus_keywords: "",
+  my_handles: "johnJackyoi0f, 4395Aron",
   min_read_before_refresh: 12,
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
@@ -362,13 +363,19 @@ async function refresh() {
     if (!ping) {
       stEl.innerHTML = '<span class="pill warn">页面未注入</span> 自动注入失败，点「重新注入」';
       $("start").disabled = false; $("stop").disabled = true;
-    } else if (ping.running) {
-      running = true;
-      stEl.innerHTML = `<span class="pill on">会话中</span> 阶段 <code>${esc(ping.phase)}</code>`;
-      $("start").disabled = true; $("stop").disabled = false;
     } else {
-      stEl.innerHTML = '<span class="pill off">空闲</span> 已连接 x.com 标签页';
-      $("start").disabled = false; $("stop").disabled = true;
+      // 显示当前登录账号，避免测试号和正式号搞混
+      const acc = ping.me ? ` <span class="pill on">@${esc(ping.me)}</span>` : ' <span class="pill warn">账号未识别</span>';
+      if (ping.running) {
+        running = true;
+        stEl.innerHTML = `<span class="pill on">会话中</span> 阶段 <code>${esc(ping.phase)}</code>${acc}`;
+        $("start").disabled = true; $("stop").disabled = false;
+      } else {
+        stEl.innerHTML = `<span class="pill off">空闲</span> 已连接 x.com${acc}`;
+        $("start").disabled = false; $("stop").disabled = true;
+      }
+      // ping 带回来的实时统计优先（比 storage 里的快一拍）
+      if (ping.stats) lastStats = ping.stats;
     }
   }
 
@@ -376,7 +383,7 @@ async function refresh() {
   const cfg = { ...DEFAULTS, ...(d.xa_settings || {}) };
   const s = d.xa_state || { events: [], records: [], activity: [], replied: {} };
   renderQuota(s, cfg);
-  if (s.stats) lastStats = s.stats;
+  if (!lastStats && s.stats) lastStats = s.stats;
   renderSess(lastStats);
   renderNow(s, running);
   renderRecords(s);

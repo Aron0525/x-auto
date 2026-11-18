@@ -416,10 +416,44 @@
     return out;
   }
 
+  /* 读出「当前登录的是谁」——这是「不碰自己帖子」的唯一依据，必须尽量稳。
+   * 多路兜底（X 改版可能改掉其中任何一个）：
+   *   ① 左侧栏「个人资料」链接  AppTabBar_Profile_Link
+   *   ② 左侧栏底部账号切换区    SideNav_AccountSwitcher_Button
+   *   ③ 页面里指向 /{handle} 且带 verified/badge 的自身入口
+   * 结果缓存 30 秒，避免每贴都查一遍 DOM。 */
+  let _meCache = { at: 0, v: "" };
   function whoami() {
-    const a = q('[data-testid="AppTabBar_Profile_Link"]');
-    const href = a ? a.getAttribute("href") || "" : "";
-    return (href.match(/^\/([A-Za-z0-9_]+)/) || [])[1] || "";
+    if (Date.now() - _meCache.at < 30000 && _meCache.v) return _meCache.v;
+
+    const fromHref = (el) => {
+      const href = (el && el.getAttribute && (el.getAttribute("href") || "")) || "";
+      const m = href.match(/^\/([A-Za-z0-9_]+)/);
+      const h = m ? m[1] : "";
+      // 排除功能页
+      if (!h || /^(home|explore|notifications|messages|settings|i|search|compose|bookmarks|jobs)$/i.test(h)) return "";
+      return h;
+    };
+
+    const tries = [
+      '[data-testid="AppTabBar_Profile_Link"]',
+      '[data-testid="SideNav_AccountSwitcher_Button"]',
+      'a[aria-label="Profile"]',
+      '[data-testid="DashButton_ProfileIcon_Link"]',
+    ];
+    for (const sel of tries) {
+      const el = q(sel);
+      const h = fromHref(el) || fromHref(el && el.querySelector && el.querySelector("a[href]"));
+      if (h) { _meCache = { at: Date.now(), v: h }; return h; }
+    }
+
+    // 最后兜底：从账号切换按钮的文字里找 @handle
+    const sw = q('[data-testid="SideNav_AccountSwitcher_Button"]');
+    if (sw) {
+      const m = (sw.innerText || "").match(/@([A-Za-z0-9_]{2,})/);
+      if (m) { _meCache = { at: Date.now(), v: m[1] }; return m[1]; }
+    }
+    return "";
   }
 
   function postAvailable() {
@@ -634,6 +668,8 @@
       min_read_before_refresh: s.min_read_before_refresh ?? 12,
       dedup_comment: s.dedup_comment !== false,
       focus_keywords: s.focus_keywords || "",
+      // 我的账号名（测试号/正式号都填，逗号分隔）——用于「不碰自己帖子」判定
+      my_handles: s.my_handles || "",
       follow_per_session: s.follow_per_session ?? 5,
       speed: s.speed ?? 1.5, feed: s.feed || "for_you",
       tone: s.tone || "friendly", style: s.style || "normal",
@@ -647,6 +683,19 @@
       comment_ban_words: L.comment_ban_words || s.comment_ban_words || "",
       notif_enabled: !!s.notif_enabled,
     };
+  }
+
+  /* 「这是不是我自己的账号」判定 —— 全项目唯一入口。
+   * 依据 = 当前登录账号（whoami 多路兜底）+ 面板配置的 my_handles（测试号/正式号都填）。
+   * 两个号来回切的时候，即使 whoami 一时读不到，配置里的名字也能兜住。 */
+  function isMyHandle(handle, beh) {
+    const k = (handle || "").toLowerCase();
+    if (!k) return false;
+    const list = String((beh && beh.my_handles) || "")
+      .split(/[,，\s@]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const me = (whoami() || "").toLowerCase();
+    if (me && !list.includes(me)) list.push(me);
+    return list.includes(k);
   }
 
   /* 给生成器准备「我以前说过什么」：
@@ -795,8 +844,8 @@
       ctx.warnedNoMe = true;
       await logAct("⚠ 读不到自己的账号名（左侧头像链接没找到）——「跳过自己的帖子」这道保护暂时失效，建议刷新 x.com", "fail");
     }
-    const mine = fresh.filter((t) => me && (t.handle || "").toLowerCase() === me);
-    const others = fresh.filter((t) => !me || (t.handle || "").toLowerCase() !== me);
+    const mine = fresh.filter((t) => isMyHandle(t.handle, beh));
+    const others = fresh.filter((t) => !isMyHandle(t.handle, beh));
     if (mine.length && !others.length) {
       ctx.stats.skipped += mine.length;
       await logAct(`跳过我自己的 ${mine.length} 条帖/回复（不读不赞不评）`, "skip");
@@ -927,8 +976,7 @@
     post.handle = post.handle || tw.handle;
 
     // 【兜底】进来才发现是自己的帖/回复 → 立刻退出，不做任何动作
-    const meHere = (whoami() || "").toLowerCase();
-    if (meHere && (post.handle || "").toLowerCase() === meHere) {
+    if (isMyHandle(post.handle, beh)) {
       ctx.stats.skipped++;
       await logAct(`跳过：这是我自己的帖子/回复（@${post.handle}），不互动`, "skip");
       await recordTweet(post, { skip: "自己的帖子" });
@@ -989,8 +1037,7 @@
     const cap = beh.follow_per_session;
     if ((ctx.stats.followed || 0) < cap && (await budgetLeft("follow", beh.limits.follow)) > 0) {
       const handle = post.handle || "";
-      const mine = (whoami() || "").toLowerCase();
-      if (handle && handle.toLowerCase() !== mine) {
+      if (handle && !isMyHandle(handle, beh)) {
         const sb = sidebarFollowState(handle);
         const known = (await storeGet()).followed[handle];
         if (sb === "following" || (known && known.state !== "follow")) {
@@ -1025,8 +1072,7 @@
   async function stepProfile(beh) {
     await waitContent(1, 20000, "作者主页");
     const handle = ctx.current ? (ctx.current.handle || "") : "";
-    const mine = (whoami() || "").toLowerCase();
-    if (handle && handle.toLowerCase() === mine) {
+    if (handle && isMyHandle(handle, beh)) {
       await logAct("这是自己的主页，返回");
       ctx.phase = "home"; ctx.tabDone = false; await goHome(); saveCtx(ctx); return;
     }
@@ -1283,8 +1329,7 @@
     const detail = readTweets(3);
     const post = detail[0] || ctx.current;
     // 兜底：通知回复也可能落到自己的帖子上
-    const meN = (whoami() || "").toLowerCase();
-    if (meN && (post.handle || "").toLowerCase() === meN) {
+    if (isMyHandle(post.handle, beh)) {
       await logAct(`跳过通知回复：是我自己的帖子（@${post.handle}）`, "skip");
       ctx.phase = "notif"; await gotoNotifications(); saveCtx(ctx); return;
     }
@@ -1354,7 +1399,10 @@
       if (m.t === "cmd") {
         if (m.op === "start") { await startSession(); reply({ ok: true }); }
         else if (m.op === "stop") { stopSession("手动停止"); reply({ ok: true }); }
-        else if (m.op === "ping") reply({ ok: true, running: !!(ctx && ctx.run), phase: ctx && ctx.phase });
+        else if (m.op === "ping") reply({ ok: true, running: !!(ctx && ctx.run),
+                                          phase: ctx && ctx.phase,
+                                          me: whoami() || "",          // 当前登录的账号名
+                                          stats: (ctx && ctx.stats) || null });
       }
     })();
     return true;
