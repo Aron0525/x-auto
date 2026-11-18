@@ -23,6 +23,7 @@
     editor: 'div[contenteditable="true"][data-testid^="tweetTextarea_"]',
     submit: '[data-testid="tweetButtonInline"], [data-testid="tweetButton"]',
     like: '[data-testid="like"]',
+    unlike: '[data-testid="unlike"]',        // 已赞态：点赞后验证按钮翻转用
     liked: '[data-testid="unlike"]',
     replyBtn: '[data-testid="reply"]',
     bookmark: '[data-testid="bookmark"]',
@@ -154,6 +155,58 @@
     await sleep(rnd(600, 1200) * SPD);
   }
 
+  // ---------------- 加载监控（慢网适配） ----------------
+  // 用户网速慢：点击/滚动后 DOM 不会立刻更新。不等就动手 = 在旧页面上点新页面的坐标。
+
+  function timelineSig(sel) {
+    const els = [...document.querySelectorAll(sel || SEL.article)];
+    return els.length + "|" + (els[0] ? norm(els[0].innerText).slice(0, 48) : "");
+  }
+
+  function pageLoading() {
+    // X 的加载转圈；视频音量条也是 progressbar 但带 aria-valuenow，排除
+    return !!document.querySelector('[role="progressbar"]:not([aria-valuenow])');
+  }
+
+  async function waitContent(minCount = 1, timeoutMs = 25000, label = "页面", sel = SEL.article) {
+    // 等转圈消失 + 内容出现且数量稳定（连续两次轮询不变）——渲染完成的近似信号
+    const end = Date.now() + timeoutMs;
+    let last = -1, stable = 0, warned = false;
+    while (Date.now() < end) {
+      const n = document.querySelectorAll(sel).length;
+      if (!pageLoading() && n >= minCount && n === last) { stable++; if (stable >= 2) return true; }
+      else stable = 0;
+      last = n;
+      if (!warned && Date.now() > end - timeoutMs + 8000) {
+        warned = true;
+        await logAct(`${label}加载较慢，继续等待渲染…（当前 ${n} 条）`);
+      }
+      await sleep(900);
+    }
+    await logAct(`${label}等待超时（${timeoutMs / 1000}s），按当前状态继续`);
+    return false;
+  }
+
+  async function waitTimelineChange(beforeSig, timeoutMs = 15000, label = "页面", sel = SEL.article) {
+    // 等内容真的变了（条数或首条文本变化）——切 tab / 导航后用
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      if (timelineSig(sel) !== beforeSig && !pageLoading()) { await sleep(rnd(500, 1000) * SPD); return true; }
+      await sleep(800);
+    }
+    return false;   // 没变化不一定是错（同页重进），调用方自行判断
+  }
+
+  async function waitMoreArticles(prevCount, timeoutMs = 15000) {
+    // 滚动后等新帖子追加（慢网时滚动会触发分页请求，DOM 要过几秒才变）
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      if (document.querySelectorAll(SEL.article).length > prevCount) return true;
+      await sleep(900);
+    }
+    return false;
+  }
+
   async function typeInto(el, text, beh) {
     if (!el) return false;
     if (!(await clickEl(el, { settle: [350, 700] }))) return false;
@@ -184,9 +237,17 @@
     }
   }
 
-  async function clickNav(sel) { await discardDrafts(); return clickSel(sel, { settle: [1200, 2200] }); }
-  const goHome = () => clickNav(SEL.navHome);
-  const gotoNotifications = () => clickNav(SEL.navNotif);
+  async function clickNav(sel, label = "页面", waitSel = SEL.article) {
+    await discardDrafts();
+    const before = timelineSig(waitSel);
+    if (!(await clickSel(sel, { settle: [1200, 2200] }))) return false;
+    // 慢网适配：SPA 换页后必须等新内容渲染完再动手
+    await waitContent(1, 25000, label, waitSel);
+    await waitTimelineChange(before, 15000, label, waitSel);
+    return true;
+  }
+  const goHome = () => clickNav(SEL.navHome, "首页");
+  const gotoNotifications = () => clickNav(SEL.navNotif, "通知页", SEL.cell);
   const onHome = () => location.pathname === "/home";
   const onNotif = () => location.pathname === "/notifications";
 
@@ -199,8 +260,28 @@
   async function switchFeedTab(kind) {
     const re = kind === "following" ? /Following/i : /For you/i;
     const tab = [...document.querySelectorAll(SEL.tab)].find((t) => re.test(t.innerText || ""));
-    if (tab) { await clickEl(tab, { settle: [1200, 2000] }); return true; }
-    return false;
+    if (!tab) { await logAct("没找到顶部栏目按钮（For You / Following），按当前栏目继续"); return false; }
+    if (tab.getAttribute("aria-selected") === "true") {
+      await logAct(`已在 ${kind === "following" ? "Following" : "For You"} 栏目，无需切换`);
+      return true;
+    }
+    const before = timelineSig();
+    const label = kind === "following" ? "Following" : "For You";
+    if (!(await clickEl(tab, { settle: [1500, 2600] }))) return false;
+    // 慢网：切栏目后时间线要重新拉取，等内容真的换一批再开始读
+    await waitContent(1, 25000, label + " 栏目");
+    const changed = await waitTimelineChange(before, 15000, label + " 栏目");
+    await logAct(`已切到 ${label} 栏目${changed ? "（内容已更新）" : "（内容未见变化，继续）"}`);
+    return true;
+  }
+
+  async function goBack(label = "上一页") {
+    // 返回只能点界面箭头（纪律：不用 history.back / 输网址）
+    const btn = q(SEL.back);
+    if (!btn) { await goHome(); return false; }
+    if (!(await clickEl(btn, { settle: [1200, 2200] }))) { await goHome(); return false; }
+    await waitContent(1, 20000, label);
+    return true;
   }
 
   // ---------------- 读取 ----------------
@@ -361,8 +442,13 @@
   function saveCtx(c) {
     if (!c || !c.run) { sessionStorage.removeItem(CTX_KEY); return; }
     sessionStorage.setItem(CTX_KEY, JSON.stringify(c));
-    // 镜像统计到 storage，控制台窗口能读到
-    withStore((s) => { s.stats = c.stats; s.phase = c.phase; }).catch(() => {});
+    // 镜像统计 + 当前正在处理的帖子到 storage，控制台窗口实时展示
+    const cur = c.current ? {
+      handle: c.current.handle || "", phase: c.phase,
+      text: norm(c.current.text).slice(0, 120),
+      cat: SOP.focusHit(c.current.text || ""),
+    } : { phase: c.phase };
+    withStore((s) => { s.stats = c.stats; s.phase = c.phase; s.now = cur; }).catch(() => {});
   }
 
   let ctx = null;
@@ -412,36 +498,61 @@
     if (ctx.feed && !ctx.tabDone) { await switchFeedTab(ctx.feed); ctx.tabDone = true; }
     const tweets = readTweets(12);
     const fresh = tweets.filter((t) => !ctx.seen.includes(t.id));
-    if (!fresh.length) { await scrollBy(ri(2, 4)); return; }
-    // 选帖策略：按质量加权（interest），不是无脑第一条
+    if (!fresh.length) {
+      const before = document.querySelectorAll(SEL.article).length;
+      await scrollBy(ri(2, 4));
+      // 慢网：滚动触发分页请求，等新帖子真的追加上来
+      if (!(await waitMoreArticles(before))) {
+        ctx.scrollTries = (ctx.scrollTries || 0) + 1;
+        if (ctx.scrollTries >= 3) {
+          await logAct("连续 3 次滚动没有新帖（到头或加载不出），滑回顶部等下一轮");
+          ctx.scrollTries = 0;
+          await scrollBy(-ri(8, 12));
+          await sleep(rnd(8000, 15000) * SPD);
+        }
+      } else ctx.scrollTries = 0;
+      return;
+    }
+    // 选帖策略：按质量加权（重点领域 > 互动帖 > 内容质量），不是无脑第一条
     fresh.forEach((t) => ctx.seen.push(t.id));
     const tw = fresh.reduce((a, b) => (SOP.qualityScore(b) > SOP.qualityScore(a) ? b : a));
     ctx.stats.read += 1;
+
+    // 实时展示：这一屏读到什么、为什么选它
+    const cat = SOP.focusHit(tw.text);
+    const inter = SOP.isInteraction(tw) ? " · 互动帖" : "";
+    await logAct(`读到 @${tw.handle || "?"}${cat ? " · " + cat : ""}${inter}：` +
+      `"${norm(tw.text).slice(0, 60) || "（无文字内容）"}"`);
     await sleep(rnd(1200, 5000) * SPD);        // 真人扫读停顿
 
     const [skip, why] = SOP.shouldSkip(tw);
-    if (skip) { ctx.stats.skipped++; await logAct(`滑过：${why}`); saveCtx(ctx); return; }
+    if (skip) { ctx.stats.skipped++; await logAct(`滑过：${why}`); await recordTweet(tw, { skip: why }); saveCtx(ctx); return; }
 
     const expand = SOP.shouldExpand(tw, beh);
     const [doLike, whyLike] = SOP.shouldLike(tw, beh);
-    const [doCmt] = SOP.shouldComment(tw, beh);
+    const [doCmt, whyCmt] = SOP.shouldComment(tw, beh);
     const [doBm] = SOP.shouldBookmark(tw, beh);
-    ctx.plan = { expand, doLike, whyLike, doCmt, doBm };
+    // 要评论就必须点开（回复框在详情页里）；看到的所有帖子都按概率摇赞/评
+    const open = expand || doCmt;
+    ctx.plan = { expand: open, doLike, whyLike, doCmt, doBm };
     ctx.current = tw;
+    await logAct(`判定：${doLike ? "赞" : "不赞（" + whyLike + "）"} · ${doCmt ? "评" : "不评（" + whyCmt + "）"}${doBm ? " · 藏" : ""}${open ? " · 点开细看" : ""}`);
 
-    if (!expand) {
+    if (!open) {
+      let liked = false;
       if (doLike && (await budgetLeft("like", beh.limits.like)) > 0) {
-        const art = [...document.querySelectorAll(SEL.article)]
-          .find((a) => (a.querySelector('a[href*="/status/"]') || {}).getAttribute &&
-            a.querySelector('a[href*="/status/"]').getAttribute("href").includes(tw.id));
-        const btn = art && art.querySelector(SEL.like);
-        if (btn && await clickEl(btn, { settle: [600, 1200] })) {
+        const ok = await likeInTimeline(tw.id);
+        if (ok) {
+          liked = true;
           ctx.stats.liked++; await addEvent("like");
           await withStore((s) => { s.liked[tw.id] = { at: new Date().toISOString() }; });
-          await logAct(`赞（时间线）@${tw.handle}`);
+          await logAct(`✓ 赞（时间线）@${tw.handle}（按钮已变已赞态）`);
+        } else if (ok === false) {
+          await logAct(`✗ 赞（时间线）@${tw.handle}：按钮状态没翻转，没点到`);
         }
       }
-      await recordTweet(tw, doLike ? { like: true } : { skip: whyLike });
+      await recordTweet(tw, liked ? { like: true }
+                                   : { skip: doLike ? "想赞但没点到" : whyLike });
     } else {
       const art = [...document.querySelectorAll(SEL.article)]
         .find((a) => (a.querySelector('a[href*="/status/"]') || { getAttribute: () => "" })
@@ -450,13 +561,38 @@
       if (!target || !(await clickEl(target, { settle: [1500, 2600] }))) {
         await logAct("详情打不开，跳过"); ctx.stats.skipped++; saveCtx(ctx); return;
       }
+      // 慢网：详情页数据是二次拉取的，等正文真的渲染出来再进下一步
+      const end = Date.now() + 20000;
+      let loaded = false;
+      while (Date.now() < end) {
+        if (q(SEL.tweetText) && !pageLoading()) { loaded = true; break; }
+        await sleep(800);
+      }
+      if (!loaded) await logAct("详情页 20s 没渲染出正文，下一步会重新判断");
       ctx.phase = "detail";
     }
     saveCtx(ctx);
   }
 
+  async function likeInTimeline(id) {
+    // 时间线点赞 + 状态验证：点完必须看到 like→unlike 翻转才算成功
+    const art = [...document.querySelectorAll(SEL.article)]
+      .find((a) => (a.querySelector('a[href*="/status/"]') || {}).getAttribute &&
+        a.querySelector('a[href*="/status/"]').getAttribute("href").includes(id));
+    const btn = art && art.querySelector(SEL.like);
+    if (!btn) return null;
+    if (!(await clickEl(btn, { settle: [600, 1200] }))) return false;
+    const end = Date.now() + 6000;
+    while (Date.now() < end) {
+      if (art.querySelector(SEL.unlike)) return true;
+      await sleep(500);
+    }
+    return false;
+  }
+
   async function stepDetail(beh) {
     const tw = ctx.current || {};
+    await waitContent(1, 15000, "详情页");
     const [avail, whyNo] = postAvailable();
     if (!avail) {
       await logAct(`跳过：帖子不可用（${whyNo}）`);
@@ -469,17 +605,24 @@
     const post = detail[0] || tw;
     post.handle = post.handle || tw.handle;
 
+    const acts = {};
+    let likedDetail = false;
     if (ctx.plan.doLike && (await budgetLeft("like", beh.limits.like)) > 0) {
-      const btn = q(SEL.like) || q(SEL.liked);
-      if (btn === q(SEL.like) && await clickEl(btn, { settle: [600, 1200] })) {
-        ctx.stats.liked++; await addEvent("like");
-        await withStore((s) => { s.liked[tw.id] = { at: new Date().toISOString() }; });
-        await logAct(`赞 @${post.handle}`);
+      const btn = q(SEL.like);
+      if (btn && await clickEl(btn, { settle: [600, 1200] })) {
+        // 验证：按钮必须翻成 unlike 态才算点赞成功
+        const end = Date.now() + 6000; let on = false;
+        while (Date.now() < end) { if (q(SEL.unlike)) { on = true; break; } await sleep(500); }
+        if (on) {
+          likedDetail = true;
+          ctx.stats.liked++; await addEvent("like");
+          await withStore((s) => { s.liked[tw.id] = { at: new Date().toISOString() }; });
+          await logAct(`✓ 赞 @${post.handle}（详情页，按钮已变已赞态）`);
+        } else await logAct(`✗ 赞 @${post.handle}：按钮状态没翻转，没点到`);
       }
     }
 
-    const acts = {};
-    if (ctx.plan.doLike) acts.like = true;
+    if (likedDetail) acts.like = true;
 
     if (ctx.plan.doCmt && (await budgetLeft("reply", beh.limits.reply)) > 0) {
       const gen = await COMMENT_GEN.generate(post, beh, beh.llm);
@@ -510,49 +653,57 @@
       }
     }
 
-    // 关注：质量分够 + 本会话没超上限 + 今日有额度 → 点进主页看再决定
+    // 关注：点开的帖子作者若未关注 → 进主页看一眼再决定（SOP：不盲关）
     const cap = beh.follow_per_session;
     if ((ctx.stats.followed || 0) < cap && (await budgetLeft("follow", beh.limits.follow)) > 0) {
       const s = await storeGet();
       const handle = post.handle || "";
-      if (handle && !s.followed[handle] && SOP.qualityScore(post) >= 2.0) {
+      if (handle && !s.followed[handle]) {
         const link = q(SEL.userNameLink);
         if (link && await clickEl(link, { settle: [1500, 2600] })) {
+          await logAct(`@${handle} 未关注 → 进主页看看再决定`);
           ctx.pendingActs = acts;
           ctx.phase = "profile"; saveCtx(ctx); return;
         }
       }
     }
     await recordTweet(post, acts);
-    ctx.phase = "home"; ctx.tabDone = false;
-    await goHome(); saveCtx(ctx);
+    ctx.phase = "home";
+    // 优先点界面返回箭头（保住时间线位置、少一次重载）；没有就回 Home
+    ctx.tabDone = await goBack("首页");
+    saveCtx(ctx);
   }
 
   // 会话节奏：评论后停 30~90 秒（每日额度由 limits 控制）
 
   async function stepProfile(beh) {
+    await waitContent(1, 20000, "作者主页");   // 慢网：主页资料卡+时间线是分批渲染的
     const bio = (q(SEL.bio) || {}).innerText || "";
     const recent = readTweets(5);
     const handle = ctx.current ? (ctx.current.handle || "") : "";
     const [ok, reason] = SOP.shouldFollow({ bio }, recent, "浏览时质量分已达标");
     const state = followState();
+    let followAct = false;
     if (state === "following") {
       await withStore((s) => { s.followed[handle] = { at: new Date().toISOString(), state: "already" }; });
+      await logAct(`@${handle} 已关注过（按钮是已关注态），不动`);
     } else if (ok && state === "follow" && (await budgetLeft("follow", beh.limits.follow)) > 0) {
       if (await clickSel(SEL.follow, { settle: [900, 1600] }) && followState() === "following") {
         ctx.stats.followed++; await addEvent("follow");
         await withStore((s) => {
           s.followed[handle] = { at: new Date().toISOString(), reason: reason.slice(0, 60) };
         });
+        followAct = true;
         await logAct(`✓ 关注 @${handle}（${reason.slice(0, 40)}）`);
       } else {
-        await logAct(`✗ @${handle} 关注未生效`);
+        await logAct(`✗ @${handle} 关注未生效（按钮状态没变）`);
       }
     } else if (!ok) {
       await logAct(`不关注 @${handle}：${reason}`);
     }
     const acts = ctx.pendingActs || {};
     delete ctx.pendingActs;
+    if (followAct) acts.follow = true;
     await recordTweet({ ...(ctx.current || {}), handle }, acts);
     ctx.phase = "home"; ctx.tabDone = false;
     await goHome(); saveCtx(ctx);
@@ -591,6 +742,7 @@
   }
 
   async function stepNotifReply(beh) {
+    await waitContent(1, 15000, "详情页");
     const [avail, whyNo] = postAvailable();
     if (!avail) { await logAct(`跳过：帖子不可用（${whyNo}）`); ctx.phase = "notif"; await gotoNotifications(); saveCtx(ctx); return; }
     await scrollBy(-ri(3, 6));               // 先看上文

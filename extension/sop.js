@@ -43,6 +43,43 @@ globalThis.SOP = (() => {
     "东西", "问题", "方法", "感觉", "应该", "需要", "觉得", "还是", "不是",
   ]);
 
+  /* 重点领域（用户指定）：股市 / AI / 半导体 / 经济。命中即加权。 */
+  const FOCUS_KEYWORDS = {
+    "股市": ["股市", "股票", "A股", "美股", "港股", "大盘", "牛市", "熊市", "仓位",
+             "持仓", "选股", "K线", "财报", "券商", "基金", "ETF", "涨停", "跌停",
+             "行情", "投资", "投机", "交易", "trading", "stock", "market", "NASDAQ",
+             "纳斯达克", "标普", "道指", "做空", "做多", "估值", "市盈率"],
+    "AI": ["AI", "人工智能", "大模型", "LLM", "Agent", "智能体", "ChatGPT", "Claude",
+           "Gemini", "OpenAI", "Anthropic", "DeepSeek", "prompt", "提示词", "RAG",
+           "机器学习", "深度学习", "神经网络", "推理", "训练", "微调", "算力", "AIGC",
+           "多模态", "AGI", "transformer", "模型"],
+    "半导体": ["半导体", "芯片", "晶圆", "台积电", "TSMC", "光刻", "EUV", "封装",
+               "存储", "内存", "DDR", "NAND", "英伟达", "NVIDIA", "AMD", "Intel",
+               "高通", "ARM", "RISC-V", "制程", "代工", "集成电路", "HBM", "GPU",
+               "芯片设计", "流片"],
+    "经济": ["经济", "宏观", "通胀", "通缩", "降息", "加息", "美联储", "央行", "利率",
+             "GDP", "CPI", "就业", "衰退", "周期", "财政", "货币", "汇率", "房地产",
+             "债务", "供应链", "贸易", "关税", "出口", "内需", "消费", "政策"],
+  };
+
+  function focusHit(text) {
+    const t = (text || "").toLowerCase();
+    for (const [cat, words] of Object.entries(FOCUS_KEYWORDS))
+      for (const w of words)
+        if (t.includes(w.toLowerCase())) return cat;
+    return "";
+  }
+
+  /* 互动帖：回复我/提到我/向读者提问——这类可以回 */
+  function isInteraction(tw) {
+    const text = (tw.text || "").trim();
+    if (/^(回复|Repl(y|ied))\s*(@|to)/i.test(text)) return true;
+    if (tw.social && /(repl|ment|quot)/i.test(tw.social)) return true;
+    if (/[？?]\s*$/.test(text) && /你|大家|有没有|怎么|如何|求/.test(text)) return true;
+    if (/@[A-Za-z0-9_]+/.test(text) && /(觉得|怎么看|试试|用过|知道)/.test(text)) return true;
+    return false;
+  }
+
   const rand = () => Math.random();
 
   /* ---------- 阅读分层 ---------- */
@@ -64,6 +101,8 @@ globalThis.SOP = (() => {
     s += Math.min(text.length, 400) / 400.0 * 1.5;
     if (/\d/.test(text)) s += 0.6;
     if (INTEREST_KEYWORDS.some((k) => text.toLowerCase().includes(k.toLowerCase()))) s += 1.0;
+    if (focusHit(text)) s += 2.0;             // 重点领域：股市/AI/半导体/经济
+    if (isInteraction(tw)) s += 1.0;          // 互动帖（回我/向我提问）
     return s;
   }
 
@@ -81,9 +120,12 @@ globalThis.SOP = (() => {
     if (shouldSkip(tw)[0]) return [false, "扫读阶段就跳过了"];
     const q = qualityScore(tw);
     const base = beh.like_prob ?? 0.35;
-    const p = Math.min(0.9, base * (0.6 + q / 6.0));
+    let p = Math.min(0.9, base * (0.6 + q / 6.0));
+    const cat = focusHit(tw.text);
+    if (cat) p = Math.min(0.95, p + 0.15);
+    if (isInteraction(tw)) p = Math.min(0.95, p + 0.1);
     if (rand() > p) return [false, `概率外（${(p * 100) | 0}%）`];
-    return [true, `质量分 ${q.toFixed(1)}，点赞概率 ${(p * 100) | 0}%`];
+    return [true, `${cat ? cat + "领域 " : ""}质量分 ${q.toFixed(1)}，点赞概率 ${(p * 100) | 0}%`];
   }
 
   /* ---------- 评论（第 4 节）---------- */
@@ -91,11 +133,19 @@ globalThis.SOP = (() => {
   function shouldComment(tw, beh) {
     if (shouldSkip(tw)[0]) return [false, "扫读阶段就跳过了"];
     const text = tw.text || "";
+    // 互动帖（回复我/向我提问）：即使内容薄也可以回
+    if (isInteraction(tw)) {
+      const p = Math.max(beh.comment_prob ?? 0.2, 0.6);
+      if (rand() <= p) return [true, `互动帖，回复概率 ${(p * 100) | 0}%`];
+      return [false, "互动帖但概率外"];
+    }
     if (text.length < 15) return [false, "内容太薄，没有可接的具体点"];
-    if (qualityScore(tw) < 1.2) return [false, "看不出具体点（都是泛泛而谈）"];
-    const p = beh.comment_prob ?? 0.2;
+    if (qualityScore(tw) < 1.2 && !focusHit(text)) return [false, "看不出具体点（都是泛泛而谈）"];
+    let p = beh.comment_prob ?? 0.2;
+    if (focusHit(text)) p = Math.min(0.9, p + 0.15);   // 重点领域多评
     if (rand() > p) return [false, `概率外（${(p * 100) | 0}%）`];
-    return [true, `评论概率 ${(p * 100) | 0}%`];
+    const cat = focusHit(text);
+    return [true, `${cat ? cat + "领域 " : ""}评论概率 ${(p * 100) | 0}%`];
   }
 
   function specificOverlap(comment, postText) {
@@ -173,5 +223,6 @@ globalThis.SOP = (() => {
     shouldSkip, qualityScore, shouldExpand, shouldLike, shouldComment,
     validateComment, specificOverlap, shouldBookmark, shouldFollow,
     notificationNeedsReply, INTEREST_KEYWORDS,
+    focusHit, isInteraction, FOCUS_KEYWORDS,
   };
 })();

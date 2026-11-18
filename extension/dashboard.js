@@ -129,6 +129,27 @@ function renderRecords(s) {
   }).join("") || '<tr><td colspan="4" style="color:#71767b">还没有留档。跑一轮会话后这里会有内容。</td></tr>';
 }
 
+const PHASE_CN = { home: "浏览时间线", detail: "详情页互动", profile: "作者主页评估",
+                   notif: "看通知", notif_reply: "回复通知" };
+
+function renderNow(s, running) {
+  const el = $("nowView"), feed = $("nowFeed");
+  if (!running) {
+    el.innerHTML = '<span style="color:#71767b">空闲中——点「开始一轮」后这里显示当前正在读的帖子。</span>';
+    feed.innerHTML = ""; return;
+  }
+  const n = s.now || {};
+  const badge = `<span class="pill on">${esc(PHASE_CN[n.phase || s.phase] || n.phase || "…")}</span>`;
+  const cat = n.cat ? ` <span class="badge b-fl">${esc(n.cat)}</span>` : "";
+  el.innerHTML = n.text
+    ? `${badge} <b>@${esc(n.handle || "?")}</b>${cat}<div class="txt" style="margin-top:4px">${esc(n.text)}</div>`
+    : `${badge} 正在翻页/等待加载…`;
+  // 最近 3 条活动直接放在视窗下面，不用切日志页
+  const acts = (s.activity || []).slice(-3);
+  feed.innerHTML = acts.map((a) =>
+    `<div style="color:#71767b">[${esc(a.at)}] ${esc(a.msg.slice(0, 90))}</div>`).join("");
+}
+
 function renderLog(s) {
   const el = $("log");
   const keep = el.scrollTop;
@@ -144,6 +165,7 @@ async function refresh() {
   const tab = await findXTab();
   xTabId = tab ? tab.id : null;
   const stEl = $("status");
+  let running = false;
   if (!tab) {
     stEl.innerHTML = '<span class="pill bad">没找到 x.com 标签页</span> 请打开并登录 x.com';
     $("start").disabled = true; $("stop").disabled = true;
@@ -153,6 +175,7 @@ async function refresh() {
       stEl.innerHTML = '<span class="pill warn">页面未注入</span> 点「修复页面注入」';
       $("start").disabled = false; $("stop").disabled = true;
     } else if (ping.running) {
+      running = true;
       stEl.innerHTML = `<span class="pill on">会话中</span> 阶段 <code>${esc(ping.phase)}</code>`;
       $("start").disabled = true; $("stop").disabled = false;
     } else {
@@ -167,6 +190,7 @@ async function refresh() {
   renderQuota(s, cfg);
   if (s.stats) lastStats = s.stats;
   renderSess(lastStats);
+  renderNow(s, running);
   renderRecords(s);
   renderLog(s);
 
