@@ -43,6 +43,15 @@ globalThis.SOP = (() => {
     "东西", "问题", "方法", "感觉", "应该", "需要", "觉得", "还是", "不是",
   ]);
 
+  // 纯表情/纯符号判断：\W 在 JS 里会把中文也算作非单词字符，必须显式排除 CJK
+  const PURE_SYMBOL = /^[\s\p{P}\p{S}\p{Emoji_Presentation}]+$/u;
+
+  /* 评论规则开关（提前定义：shouldSkip 也要用）：
+   *   mine = 用户规则（默认，什么帖子都能评、短评）
+   *   sop  = 原 SOP 严格规则
+   */
+  const isMineMode = (beh) => (beh?.comment_rule || "mine") === "mine";
+
   /* 重点领域（用户指定）：股市 / AI / 半导体 / 经济。命中即加权。 */
   const FOCUS_KEYWORDS = {
     "股市": ["股市", "股票", "A股", "美股", "港股", "大盘", "牛市", "熊市", "仓位",
@@ -62,11 +71,20 @@ globalThis.SOP = (() => {
              "债务", "供应链", "贸易", "关税", "出口", "内需", "消费", "政策"],
   };
 
+  /* 用户自定义补充关键词（面板「重点关键词」填的，逗号分隔）。
+   * 命中同样算重点领域加权，类别名统一叫「自定义」。 */
+  let EXTRA_KEYWORDS = [];
+  function setExtraKeywords(str) {
+    EXTRA_KEYWORDS = String(str || "").split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+  }
+
   function focusHit(text) {
     const t = (text || "").toLowerCase();
     for (const [cat, words] of Object.entries(FOCUS_KEYWORDS))
       for (const w of words)
         if (t.includes(w.toLowerCase())) return cat;
+    for (const w of EXTRA_KEYWORDS)
+      if (t.includes(w.toLowerCase())) return "自定义";
     return "";
   }
 
@@ -84,13 +102,16 @@ globalThis.SOP = (() => {
 
   /* ---------- 阅读分层 ---------- */
 
-  function shouldSkip(tw) {
+  function shouldSkip(tw, beh) {
     const text = (tw.text || "").trim();
     if (!text) return [true, "无正文（纯图/纯链接）"];
     const low = text.toLowerCase();
     for (const p of SKIP_PATTERNS) if (text.includes(p)) return [true, `命中跳过项：${p}`];
-    if (text.length < 8 && !/[a-zA-Z]{4,}/.test(text)) return [true, "正文过短且无可读信息"];
-    if (low.includes("http") && text.length < 40) return [true, "疑似纯链接"];
+    // 我的规则：短帖照评（用户要求「什么帖子都可以评论」），不再按长度拦
+    if (!isMineMode(beh)) {
+      if (text.length < 8 && !/[a-zA-Z]{4,}/.test(text)) return [true, "正文过短且无可读信息"];
+      if (low.includes("http") && text.length < 40) return [true, "疑似纯链接"];
+    }
     return [false, ""];
   }
 
@@ -108,43 +129,69 @@ globalThis.SOP = (() => {
 
   function shouldExpand(tw, beh) {
     const text = tw.text || "";
-    if (text.length >= 220) return true;
+    const minChars = beh?.expand_char_min ?? 220;
+    if (text.length >= minChars) return true;
     if (tw.social) return true;
     if (/(回复|replied|Replying to)/i.test(text.slice(0, 80))) return true;
-    return rand() < (beh.expand_prob ?? 0.25);
+    return rand() < (beh?.expand_prob ?? 0.25);
   }
 
   /* ---------- 点赞（第 3 节）---------- */
 
   function shouldLike(tw, beh) {
-    if (shouldSkip(tw)[0]) return [false, "扫读阶段就跳过了"];
+    if (shouldSkip(tw, beh)[0]) return [false, "扫读阶段就跳过了"];
     const q = qualityScore(tw);
     const base = beh.like_prob ?? 0.35;
-    let p = Math.min(0.9, base * (0.6 + q / 6.0));
+    const cap = Math.min(1, beh.like_prob_cap ?? 0.9);
+    let p = Math.min(cap, base * (0.6 + q / 6.0));
     const cat = focusHit(tw.text);
-    if (cat) p = Math.min(0.95, p + 0.15);
-    if (isInteraction(tw)) p = Math.min(0.95, p + 0.1);
+    if (cat) p = Math.min(cap, p + 0.15);
+    if (isInteraction(tw)) p = Math.min(cap, p + 0.1);
     if (rand() > p) return [false, `概率外（${(p * 100) | 0}%）`];
     return [true, `${cat ? cat + "领域 " : ""}质量分 ${q.toFixed(1)}，点赞概率 ${(p * 100) | 0}%`];
   }
 
-  /* ---------- 评论（第 4 节）---------- */
+  /* ---------- 评论（第 4 节）----------
+   * 两套规则并存，面板「评论规则」切换：
+   *   "mine"（默认，用户规则）：什么帖子都能评，字数随机 13 字左右、硬上限 20 字，
+   *                             内容 = 回应帖子 + 表达观点。只挡明显的垃圾/骂战帖。
+   *   "sop"（原 SOP 规则）：长度门槛 + 质量分 + 接住原帖具体点 + 禁空话等全套校验。
+   * 两种模式下「广告/互关/骂战」这类扫读级垃圾帖都不碰（SOP.shouldSkip 前置）。
+   */
+  function commentLength(beh) {
+    // 用户规则：目标 13 字左右，随机浮动；硬上限 20 字
+    const target = Math.max(5, Math.min(20, beh?.comment_target_len ?? 13));
+    const lo = Math.max(4, target - 5), hi = Math.min(20, target + 5);
+    return { lo, hi, cap: 20 };
+  }
 
   function shouldComment(tw, beh) {
-    if (shouldSkip(tw)[0]) return [false, "扫读阶段就跳过了"];
+    if (shouldSkip(tw, beh)[0]) return [false, "扫读阶段就跳过了"];
     const text = tw.text || "";
-    // 互动帖（回复我/向我提问）：即使内容薄也可以回
+
+    if (isMineMode(beh)) {
+      // 我的规则：不设质量门槛，几乎所有帖子都评；概率仍受「评论概率」控制
+      if (!text.trim()) return [false, "纯图片/纯视频帖，没有可回应的文字"];
+      const cap = Math.min(1, beh.comment_prob_cap ?? 1);
+      const p = Math.min(cap, Math.max(beh.comment_prob ?? 0.2, 0.6));
+      if (rand() > p) return [false, `概率外（${(p * 100) | 0}%）`];
+      const cat = focusHit(text);
+      const { lo, hi } = commentLength(beh);
+      return [true, `${cat ? cat + "领域 " : ""}我的规则：${lo}~${hi} 字，概率 ${(p * 100) | 0}%`];
+    }
+
+    // 原 SOP 规则（保留）
+    const capC = Math.min(1, beh.comment_prob_cap ?? 0.9);
     if (isInteraction(tw)) {
-      const p = Math.max(beh.comment_prob ?? 0.2, 0.6);
+      const p = Math.min(capC, Math.max(beh.comment_prob ?? 0.2, 0.6));
       if (rand() <= p) return [true, `互动帖，回复概率 ${(p * 100) | 0}%`];
       return [false, "互动帖但概率外"];
     }
-    // 用户策略（主动多互动）：短帖只有在重点领域才放行，长度门槛从 15 降到 10
     if (text.length < 10) return [false, "内容太薄，没有可接的具体点"];
     if (text.length < 15 && !focusHit(text)) return [false, "内容偏短，非重点领域不评"];
     if (qualityScore(tw) < 1.2 && !focusHit(text)) return [false, "看不出具体点（都是泛泛而谈）"];
     let p = beh.comment_prob ?? 0.2;
-    if (focusHit(text)) p = Math.min(0.9, p + 0.15);   // 重点领域多评
+    if (focusHit(text)) p = Math.min(capC, p + 0.15);
     if (rand() > p) return [false, `概率外（${(p * 100) | 0}%）`];
     const cat = focusHit(text);
     return [true, `${cat ? cat + "领域 " : ""}评论概率 ${(p * 100) | 0}%`];
@@ -167,15 +214,29 @@ globalThis.SOP = (() => {
     return hits;
   }
 
-  function validateComment(comment, tw) {
+  function validateComment(comment, tw, beh) {
     const c = (comment || "").trim();
     if (!c) return [false, "空评论"];
+    if (PURE_SYMBOL.test(c)) return [false, "纯表情/纯符号"];
+
+    if (isMineMode(beh)) {
+      // 我的规则：只硬卡「不超过 20 字」，内容要回应帖子 + 表达观点
+      const { cap } = commentLength(beh);
+      if (c.length > cap) return [false, `超过 ${cap} 字（当前 ${c.length} 字）`];
+      if (c.length < 4) return [false, "太短，表达不出观点"];
+      // 仍然保留红线：互动交换 / 广告引流（这类发出去会被限流甚至封号）
+      if (["互关", "回关", "互赞", "关注我", "求关注"].some((k) => c.includes(k)))
+        return [false, "涉及互动交换（会被平台判定刷量）"];
+      for (const bad of FABRICATION) if (c.includes(bad)) return [false, `疑似编造亲历：${bad}`];
+      return [true, `通过（我的规则 · ${c.length}/${cap} 字）`];
+    }
+
+    // 原 SOP 规则（保留）：全套严格校验
     if (c.length > 200) return [false, "过长（SOP 不要求长，长容易注水）"];
     for (const bad of BANNED_COMMENT) if (c.includes(bad)) return [false, `含禁用表达：${bad}`];
     for (const bad of FABRICATION) if (c.includes(bad)) return [false, `疑似编造亲历：${bad}`];
     if (["互关", "回关", "互赞", "关注我"].some((k) => c.includes(k)))
       return [false, "涉及互动交换（SOP 明令禁止）"];
-    if (/^[\s\W_]+$/.test(c)) return [false, "纯表情/纯符号"];
     if (specificOverlap(c, tw.text || "") < 1)
       return [false, "没有接住原帖的具体点（换个帖也能用 → 不合格）"];
     return [true, "通过"];
@@ -184,7 +245,7 @@ globalThis.SOP = (() => {
   /* ---------- 收藏（第 6 节）---------- */
 
   function shouldBookmark(tw, beh) {
-    if (shouldSkip(tw)[0]) return [false, "扫读阶段就跳过了"];
+    if (shouldSkip(tw, beh)[0]) return [false, "扫读阶段就跳过了"];
     const text = tw.text || "";
     const useful = ["工具", "方法", "流程", "教程", "清单", "对比",
                     "限制", "价格", "文档", "实测", "踩坑"].some((k) => text.includes(k));
@@ -216,7 +277,7 @@ globalThis.SOP = (() => {
     let body = (parts.length >= 2 ? parts[parts.length - 1] : t).trim(" ·:：-\n");
     body = body.replace(/·\s*\d+\s*[mhd]$/, "").trim();
     if (!body) return [false, "只有提示没有正文"];
-    if (/^[\s\W_]+$/.test(body)) return [false, "纯表情/纯符号"];
+    if (PURE_SYMBOL.test(body)) return [false, "纯表情/纯符号"];
     if (body.length < 4) return [false, "内容太短，无需追问"];
     return [true, "有实质内容"];
   }
@@ -225,6 +286,8 @@ globalThis.SOP = (() => {
     shouldSkip, qualityScore, shouldExpand, shouldLike, shouldComment,
     validateComment, specificOverlap, shouldBookmark, shouldFollow,
     notificationNeedsReply, INTEREST_KEYWORDS,
-    focusHit, isInteraction, FOCUS_KEYWORDS,
+    focusHit, isInteraction, FOCUS_KEYWORDS, setExtraKeywords,
+    isMineMode, commentLength,
   };
 })();
+

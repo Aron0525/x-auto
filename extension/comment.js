@@ -156,11 +156,52 @@ globalThis.COMMENT_GEN = (() => {
     return pool[idx].replaceAll("{p}", phrase);
   }
 
+  /* ---------- 我的规则：短评（回应帖子 + 表达观点，13 字左右，上限 20 字）----------
+   * 用户要求：什么帖子都能评、不超 20 字、最好 13 字左右且随机、内容 = 回应帖子 + 观点。
+   * 这里给 LLM 一套极简指令，模板兜底也换成短句池（不再是 SOP 那套长模板）。 */
+
+  const MINE_SYSTEM = `你在 X（推特）上刷到一条帖子，随手回一句短评（中文）。
+1. 先用半句回应原帖的具体内容，再表达你的观点或态度。
+2. 总长度不超过 20 个字，{len} 字左右最合适。只输出这一句话，不要引号、不要解释。
+3. 像真人随口接话，可以有态度，但不阴阳怪气、不骂人、不引战。
+4. 不要话题标签（#），不要 @ 人，不要贴链接，不要推销自己。
+5. 不要用「说得很好」「学习了」「干货」「感谢分享」这类空话。`;
+
+  // 短句模板：{p} 放原帖抓出来的具体短语，保证「回应帖子」
+  const MINE_TEMPLATES = [
+    "「{p}」这点确实，我也这么看。",
+    "「{p}」有同感，不止一次了。",
+    "{p}，我觉得关键还是看执行。",
+    "「{p}」挺真实，代价也不小。",
+    "{p}，这个判断我认同。",
+    "「{p}」我持保留，但方向没错。",
+    "{p}说得在理，落地最难。",
+    "「{p}」——确实，越往后越明显。",
+    "{p}，我更看重它后面的影响。",
+    "「{p}」这条我收藏了，有用。",
+    "{p}，短期热闹，长期未必。",
+    "「{p}」说得挺实在，值得一试。",
+  ];
+
+  let lastMine = -1;
+  function mineTemplate(post, len) {
+    const phrase = shortPhrase(post.text || "", Math.max(6, len - 6)) || "这个观点";
+    let idx = 0;
+    if (MINE_TEMPLATES.length > 1) {
+      const choices = MINE_TEMPLATES.map((_, i) => i).filter((i) => i !== lastMine);
+      idx = choices[Math.floor(Math.random() * choices.length)];
+    }
+    lastMine = idx;
+    return MINE_TEMPLATES[idx].replaceAll("{p}", phrase);
+  }
+
   /* ---------- 生成入口 ---------- */
 
   async function generate(post, beh, llmCfg) {
     const body = (post.text || "").trim();
     if (!body) return { text: "", source: "none", error: "帖子没有正文，跳过" };
+
+    if (SOP.isMineMode(beh)) return generateMine(post, body, beh, llmCfg);
 
     if (llmCfg && llmCfg.apiKey && llmCfg.baseUrl && llmCfg.model) {
       const scene = classifyScene(body, !!post.is_reply_to_me);
@@ -204,5 +245,47 @@ globalThis.COMMENT_GEN = (() => {
              ...(ok ? { note: "未配置密钥，模板兜底" } : { error: `模板未通过 SOP 校验：${why}` }) };
   }
 
-  return { generate, classifyScene };
+  /* 我的规则：短评生成。LLM 优先生成，失败/不合格退回短句模板。
+   * 长度：目标 len（默认 13，随机 ±5 内浮动），硬上限 20 字。 */
+  async function generateMine(post, body, beh, llmCfg) {
+    const { lo, hi, cap } = SOP.commentLength(beh);
+    const len = lo + Math.floor(Math.random() * (hi - lo + 1));   // 每次随机一个目标长度
+    const tryAccept = (raw) => {
+      const t = clean(raw).replace(/[。！？!?]+$/, (m) => m);
+      if (!t) return null;
+      const [ok] = SOP.validateComment(t, post, beh);
+      return ok ? t : null;
+    };
+
+    if (llmCfg && llmCfg.apiKey && llmCfg.baseUrl && llmCfg.model) {
+      const system = MINE_SYSTEM.replace("{len}", String(len));
+      let feedback = "";
+      for (const attempt of [1, 2]) {
+        let raw = "";
+        try {
+          raw = await chrome.runtime.sendMessage({
+            t: "llm", system,
+            user: `【帖子作者】${post.author || ""}\n【帖子正文】\n${body.slice(0, 800)}\n\n` +
+                  `【要求】${lo}~${hi} 个字（不超过 ${cap} 字），先回应帖子内容再表达观点。${feedback}`,
+            cfg: llmCfg,
+          });
+        } catch (e) { raw = ""; }
+        if (!raw || raw.__error) break;
+        const t = tryAccept(raw);
+        if (t) return { text: t, source: "llm", model: llmCfg.model, len: t.length, target: len, attempts: attempt };
+        feedback = `\n\n【上一版不合格】字数或内容不符合要求（要求 ${lo}~${hi} 字，不超过 ${cap} 字），请重写一句。`;
+      }
+      const tpl = mineTemplate(post, len);
+      const t = tryAccept(tpl);
+      return { text: t || "", source: "template", target: len,
+               ...(t ? { note: "LLM 不合格，退回短句模板" } : { error: "模板也超出字数上限" }) };
+    }
+
+    const tpl = mineTemplate(post, len);
+    const t = tryAccept(tpl);
+    return { text: t || "", source: "template", target: len,
+             ...(t ? { note: "未配置密钥，短句模板兜底" } : { error: "模板超出字数上限" }) };
+  }
+
+  return { generate, classifyScene, generateMine };
 })();
