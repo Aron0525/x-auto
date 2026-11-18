@@ -1,7 +1,7 @@
 @echo off
-rem Sync extension code to target profile dir
-rem Usage: sync.bat test      -> E:\edge-test\extension
-rem        sync.bat official  -> E:\edge-official\extension
+rem Sync extension code to target browser profile dir
+rem Usage: sync.bat test      -> E:\DSH\tui\edge-test\extension
+rem        sync.bat official  -> E:\DSH\tui\edge-official\extension
 rem        sync.bat all       -> both
 
 setlocal enabledelayedexpansion
@@ -11,11 +11,11 @@ if "%TARGET%"=="" set TARGET=test
 
 if not exist "%SRC%" ( echo [ERROR] Source not found: %SRC% & pause & exit /b 1 )
 
-if /i "%TARGET%"=="test"     call :do_copy "E:\edge-test\extension"     "TEST"
-if /i "%TARGET%"=="official" call :do_copy "E:\edge-official\extension" "OFFICIAL"
+if /i "%TARGET%"=="test"     call :do_copy "E:\DSH\tui\edge-test\extension"     "TEST"
+if /i "%TARGET%"=="official" call :do_copy "E:\DSH\tui\edge-official\extension" "OFFICIAL"
 if /i "%TARGET%"=="all" (
-  call :do_copy "E:\edge-test\extension"     "TEST"
-  call :do_copy "E:\edge-official\extension" "OFFICIAL"
+  call :do_copy "E:\DSH\tui\edge-test\extension"     "TEST"
+  call :do_copy "E:\DSH\tui\edge-official\extension" "OFFICIAL"
 )
 
 echo.
