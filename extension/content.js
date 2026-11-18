@@ -43,13 +43,26 @@
 
   // ---------------- 基础动作 ----------------
 
+  let SPD = 1.5;                          // 速度系数：1=原速，1.5=慢一半（面板可调）
+  // 落点系统性偏移（页面缩放/滚动造成）；hoverUnavailable=后台标签页 :hover 不可用时退回不校验
+  const _off = { dx: 0, dy: 0, calibrated: false, hoverUnavailable: false };
+
+  async function waitFor(fn, ms = 4000) {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (fn()) return true;
+      await sleep(300);
+    }
+    return false;
+  }
+
   async function stableRect(el) {
     // 滚到视口中部并等滚动稳定（Python 版踩过的坑：滚动中读坐标是过渡值）
     el.scrollIntoView({ block: "center", behavior: "instant" });
-    await sleep(450);
+    await sleep(450 * SPD);
     let r = el.getBoundingClientRect();
     for (let i = 0; i < 5; i++) {
-      await sleep(250);
+      await sleep(250 * SPD);
       const r2 = el.getBoundingClientRect();
       if (Math.abs(r2.x - r.x) < 1 && Math.abs(r2.y - r.y) < 1) { r = r2; break; }
       r = r2;
@@ -57,14 +70,74 @@
     return r;
   }
 
+  async function hoverHits(el, x, y) {
+    // 落点校验：把鼠标移过去后，看目标元素是否真的进入 :hover 链。
+    // CDP 坐标与 CSS 坐标在页面缩放/滚动异常时有系统性偏差——不校验就点，
+    // 就是之前「反复点同一处空点」的根因（Python 版靠 :hover 扫描标定解决）。
+    // 注意：标签页不可见时 :hover 可能永远不亮，连续 3 次全失败则退回直点模式。
+    if (_off.hoverUnavailable) { await send({ t: "input", op: "move", x, y, speed: SPD }); return true; }
+    await send({ t: "input", op: "move", x, y, speed: SPD });
+    await sleep(rnd(160, 320) * SPD);
+    let hit = false;
+    try { hit = el.matches(":hover"); } catch (e) { hit = false; }
+    if (hit) { _off.hoverFails = 0; return true; }
+    _off.hoverFails = (_off.hoverFails || 0) + 1;
+    if (_off.hoverFails >= 3) {
+      _off.hoverUnavailable = true;
+      await logAct("⚠ :hover 始终不亮（标签页可能不可见），落点校验退回直点模式");
+    }
+    return false;
+  }
+
+  async function scanForHit(el, cx, cy, radius, step) {
+    const cand = [];
+    for (let ry = -radius; ry <= radius; ry += step)
+      for (let rx = -radius; rx <= radius; rx += step)
+        if (rx || ry) cand.push([rx * rx + ry * ry, rx, ry]);
+    cand.sort((a, b) => a[0] - b[0]);           // 由近及远：偏移一般不大
+    for (const [, rx, ry] of cand) {
+      if (await hoverHits(el, cx + rx + _off.dx, cy + ry + _off.dy))
+        return { x: cx + rx + _off.dx, y: cy + ry + _off.dy, dx: rx, dy: ry };
+    }
+    return null;
+  }
+
+  async function calibrateOffset() {
+    // 会话开始时用导航锚点学一次系统性偏移
+    for (const sel of [SEL.navHome, SEL.navNotif, '[data-testid="SideNav_NewTweet_Button"]']) {
+      const el = q(sel);
+      if (!el) continue;
+      const r = await stableRect(el);
+      if (r.width <= 0) continue;
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      if (await hoverHits(el, cx + _off.dx, cy + _off.dy)) { _off.calibrated = true; return true; }
+      const hit = await scanForHit(el, cx, cy, 36, 12);
+      if (hit) {
+        _off.dx += hit.dx; _off.dy += hit.dy; _off.calibrated = true;
+        await logAct(`落点已标定：偏移 dx=${_off.dx} dy=${_off.dy}`);
+        return true;
+      }
+    }
+    await logAct("落点标定失败：将逐次校验，点不中就跳过");
+    return false;
+  }
+
   async function clickEl(el, opts = {}) {
     if (!el) return false;
     const r = await stableRect(el);
     if (r.width <= 0 || r.height <= 0) return false;
-    const res = await send({ t: "input", op: "click",
-                             x: r.left + r.width / 2, y: r.top + r.height / 2 });
-    await sleep(opts.settle ? rnd(...opts.settle) : rnd(500, 1100));
-    return !!(res && res.ok);
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    let x = cx + _off.dx, y = cy + _off.dy;
+    if (!(await hoverHits(el, x, y))) {
+      // 局部重扫：元素可能被时间线自动滚动挪走，或偏移变了
+      const hit = await scanForHit(el, cx, cy, 24, 8);
+      if (hit) { x = hit.x; y = hit.y; _off.dx += hit.dx; _off.dy += hit.dy; }
+      else { await logAct("落点校验失败：鼠标移不到目标上，跳过这次点击"); return false; }
+    }
+    await send({ t: "input", op: "press", x, y, speed: SPD });
+    await sleep(opts.settle ? rnd(opts.settle[0] * SPD, opts.settle[1] * SPD)
+                           : rnd(600, 1300) * SPD);
+    return true;
   }
 
   const q = (sel) => document.querySelector(sel);
@@ -77,8 +150,8 @@
     await send({ t: "input", op: "wheel",
                  x: Math.min(innerWidth - 80, Math.max(80, r.left + r.width / 2)),
                  y: Math.min(innerHeight - 60, Math.max(60, r.top + r.height / 2)),
-                 notches: -notches });
-    await sleep(rnd(500, 1000));
+                 notches: -notches, speed: SPD });
+    await sleep(rnd(600, 1200) * SPD);
   }
 
   async function typeInto(el, text, beh) {
@@ -86,10 +159,10 @@
     if (!(await clickEl(el, { settle: [350, 700] }))) return false;
     await send({ t: "input", op: "hotkey", keys: ["ctrl", "a"] });
     await send({ t: "input", op: "hotkey", keys: ["backspace"] });
-    await sleep(rnd(200, 400));
+    await sleep(rnd(200, 400) * SPD);
     const res = await send({ t: "input", op: "type", text,
                              perCharMs: beh.typing_ms || 130 });
-    await sleep(rnd(300, 600));
+    await sleep(rnd(300, 600) * SPD);
     return !!(res && res.ok);
   }
 
@@ -107,7 +180,7 @@
           .find((b) => (b.innerText || "").includes(t));
         if (btn) { await clickEl(btn); break; }
       }
-      await sleep(rnd(400, 800));
+      await sleep(rnd(400, 800) * SPD);
     }
   }
 
@@ -219,7 +292,7 @@
     }
     // 最后再用 Ctrl+Enter 兜一次
     await send({ t: "input", op: "hotkey", keys: ["ctrl", "enter"] });
-    await sleep(rnd(1500, 2500));
+    await sleep(rnd(1500, 2500) * SPD);
     if (!editorText() || (document.body.innerText || "").includes(probe))
       return { ok: true, via: "ctrl-enter" };
     return { ok: false, error: "两次提交都没有成功证据" };
@@ -298,11 +371,13 @@
   async function getBeh() {
     const d = await chrome.storage.local.get(["xa_settings"]);
     const s = d.xa_settings || {};
+    SPD = Math.max(0.5, Math.min(3, s.speed ?? 1.5));   // 全局速度系数生效点
     return {
       typing_ms: s.typing_ms ?? 130, session_minutes: s.session_minutes ?? 30,
       like_prob: s.like_prob ?? 0.85, comment_prob: s.comment_prob ?? 0.8,
       expand_prob: s.expand_prob ?? 0.9, bookmark_prob: s.bookmark_prob ?? 0.3,
       follow_per_session: s.follow_per_session ?? 3,
+      speed: s.speed ?? 1.5, feed: s.feed || "for_you",
       tone: s.tone || "friendly", style: s.style || "normal",
       limits: { like: s.max_like ?? 60, reply: s.max_reply ?? 20, follow: s.max_follow ?? 25 },
       llm: { apiKey: s.llm_key || "", baseUrl: s.llm_base || "https://api.deepseek.com/v1",
@@ -314,12 +389,13 @@
   async function startSession() {
     const beh = await getBeh();
     ctx = { run: true, phase: beh.notif_enabled ? "notif" : "home",
-            feed: "following", deadline: Date.now() + beh.session_minutes * 60000,
+            feed: beh.feed, deadline: Date.now() + beh.session_minutes * 60000,
             started: Date.now(), seen: [], stats: { read: 0, expanded: 0, liked: 0,
             commented: 0, bookmarked: 0, followed: 0, skipped: 0 },
             notifTodo: [], current: null, plan: null };
     saveCtx(ctx);
-    await logAct(`会话开始：时间盒 ${beh.session_minutes} 分钟`);
+    await logAct(`会话开始：时间盒 ${beh.session_minutes} 分钟 · 速度系数 ${SPD}（1=原速，越大越慢）`);
+    if (!_off.calibrated) await calibrateOffset();
     loop();
   }
 
@@ -341,7 +417,7 @@
     fresh.forEach((t) => ctx.seen.push(t.id));
     const tw = fresh.reduce((a, b) => (SOP.qualityScore(b) > SOP.qualityScore(a) ? b : a));
     ctx.stats.read += 1;
-    await sleep(rnd(1200, 5000));            // 真人扫读停顿
+    await sleep(rnd(1200, 5000) * SPD);        // 真人扫读停顿
 
     const [skip, why] = SOP.shouldSkip(tw);
     if (skip) { ctx.stats.skipped++; await logAct(`滑过：${why}`); saveCtx(ctx); return; }
@@ -388,7 +464,7 @@
     }
     ctx.stats.expanded++;
     await scrollBy(-ri(3, 6));               // 向上滑动读上下文（SOP：先读再动）
-    await sleep(rnd(800, 1800));
+    await sleep(rnd(800, 1800) * SPD);
     const detail = readTweets(3);
     const post = detail[0] || tw;
     post.handle = post.handle || tw.handle;
@@ -417,7 +493,7 @@
           });
           acts.comment = text.slice(0, 120);
           await logAct(`✓ 评论 @${post.handle}：${text.slice(0, 40)}`);
-          await sleep(rnd(30000, 90000));   // 写操作间隔：真人不会连发
+          await sleep(rnd(30000, 90000) * SPD);   // 写操作间隔：真人不会连发
         } else {
           await logAct(`✗ 评论失败：${r.error}`);
         }
@@ -494,12 +570,12 @@
       await logAct(`通知：${items.length} 条与我相关，${ctx.notifTodo.length} 条值得回`);
     }
     if (!ctx.notifTodo.length) {
-      ctx.phase = "home"; ctx.feed = "following"; ctx.tabDone = false;
+      ctx.phase = "home"; ctx.tabDone = false;   // feed 保持会话开始时的设置
       await goHome(); saveCtx(ctx); return;
     }
     if (Date.now() > ctx.started + (ctx.deadline - ctx.started) * 0.2) {
       // 通知只占前 20% 时间（SOP 11）
-      ctx.phase = "home"; ctx.feed = "following"; ctx.tabDone = false;
+      ctx.phase = "home"; ctx.tabDone = false;
       await goHome(); saveCtx(ctx); return;
     }
     const it = ctx.notifTodo.shift();
@@ -518,7 +594,7 @@
     const [avail, whyNo] = postAvailable();
     if (!avail) { await logAct(`跳过：帖子不可用（${whyNo}）`); ctx.phase = "notif"; await gotoNotifications(); saveCtx(ctx); return; }
     await scrollBy(-ri(3, 6));               // 先看上文
-    await sleep(rnd(800, 1600));
+    await sleep(rnd(800, 1600) * SPD);
     const detail = readTweets(3);
     const post = detail[0] || ctx.current;
     if ((await budgetLeft("reply", beh.limits.reply)) > 0) {

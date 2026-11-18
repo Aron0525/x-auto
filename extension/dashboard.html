@@ -98,6 +98,12 @@
           <h2>行为参数（SOP）</h2>
           <div class="row"><label>会话分钟</label><input type="number" id="session_minutes" min="5" max="60"></div>
           <div class="row"><label>打字 ms/字</label><input type="number" id="typing_ms" min="50" max="500"></div>
+          <div class="row"><label>速度系数</label><input type="number" id="speed" min="0.5" max="3" step="0.1">
+            <span style="color:#71767b">1=原速 · 1.5=慢一半 · 2=慢一倍</span></div>
+          <div class="row"><label>首页 Feed</label>
+            <select id="feed">
+              <option value="for_you">For You（推荐）</option><option value="following">Following（关注）</option>
+            </select></div>
           <div class="row"><label>展开概率</label><input type="number" id="expand_prob" min="0" max="1" step="0.05"></div>
           <div class="row"><label>点赞概率</label><input type="number" id="like_prob" min="0" max="1" step="0.05"></div>
           <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05"></div>

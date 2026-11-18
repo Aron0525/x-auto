@@ -4,11 +4,12 @@ const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "typing_ms", "follow_per_session",
              "max_like", "max_reply", "max_follow"];
 const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob"];
-const TEXT = ["tone", "style", "llm_key", "llm_base", "llm_model"];
-const FIELDS = [...NUM, ...PROB, ...TEXT];
+const TEXT = ["tone", "style", "feed", "llm_key", "llm_base", "llm_model"];
+const FIELDS = [...NUM, ...PROB, ...TEXT, "speed"];
 
 const DEFAULTS = {
-  session_minutes: 30, typing_ms: 130, like_prob: 0.85, comment_prob: 0.8,
+  session_minutes: 30, typing_ms: 130, speed: 1.5, feed: "for_you",
+  like_prob: 0.85, comment_prob: 0.8,
   expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 3,
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
@@ -46,12 +47,13 @@ async function saveSettings() {
     const el = $(f);
     if (!el) continue;
     if (PROB.includes(f)) s[f] = Math.max(0, Math.min(1, parseFloat(el.value) || 0));
+    else if (f === "speed") s[f] = Math.max(0.5, Math.min(3, parseFloat(el.value) || 1.5));
     else if (NUM.includes(f)) s[f] = Math.max(0, parseInt(el.value, 10) || 0);
     else s[f] = el.value.trim();
   }
   s.notif_enabled = $("notif_enabled").checked;
   await chrome.storage.local.set({ xa_settings: s });
-  flash("设置已保存", "on");
+  flash(`设置已保存 · 速度系数 ${s.speed}`, "on");
 }
 
 function flash(msg, cls) {

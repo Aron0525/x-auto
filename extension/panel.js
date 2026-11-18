@@ -43,7 +43,9 @@ async function saveSettings() {
       ? Math.max(0, Math.min(1, parseFloat(raw) || 0)) : raw;
   }
   s.notif_enabled = $("notif_enabled").checked;
-  await chrome.storage.local.set({ xa_settings: s });
+  // 合并而不是整体替换：控制台独有的字段（speed/feed 等）不能被抹掉
+  const cur = (await chrome.storage.local.get(["xa_settings"])).xa_settings || {};
+  await chrome.storage.local.set({ xa_settings: { ...cur, ...s } });
   flash("已保存");
 }
 

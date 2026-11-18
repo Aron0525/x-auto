@@ -50,13 +50,13 @@ async function cdp(tabId, method, params) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rnd = (a, b) => a + Math.random() * (b - a);
 
-async function humanMove(tabId, x, y) {
-  // 两段贝塞尔 + 每步抖动，45~120 步/秒的节奏
+async function humanMove(tabId, x, y, speed = 1) {
+  // 两段贝塞尔 + 每步抖动。speed>1 = 更慢（步间停顿乘 speed）
   const cur = (await cdp(tabId, "Runtime.evaluate", {
     expression: "window.__XA_MOUSE__ || [0,0]", returnByValue: true,
   }))?.result?.value || [0, 0];
   const [x0, y0] = typeof cur === "object" && !Array.isArray(cur) ? [0, 0] : cur;
-  const steps = Math.max(8, Math.round(Math.hypot(x - x0, y - y0) / rnd(12, 25)));
+  const steps = Math.max(10, Math.round(Math.hypot(x - x0, y - y0) / rnd(10, 20)));
   const cx1 = x0 + (x - x0) * 0.3 + rnd(-40, 40), cy1 = y0 + (y - y0) * 0.1 + rnd(-30, 30);
   const cx2 = x0 + (x - x0) * 0.7 + rnd(-25, 25), cy2 = y0 + (y - y0) * 0.9 + rnd(-15, 15);
   for (let i = 1; i <= steps; i++) {
@@ -67,28 +67,38 @@ async function humanMove(tabId, x, y) {
       type: "mouseMoved", x: Math.round(bx + rnd(-1.5, 1.5)),
       y: Math.round(by + rnd(-1.5, 1.5)), button: "none", modifiers: 0,
     });
-    await sleep(rnd(8, 22));
+    await sleep(rnd(10, 26) * speed);
   }
   await cdp(tabId, "Runtime.evaluate", { expression: `window.__XA_MOUSE__=[${x},${y}]` });
 }
 
-async function inputClick(tabId, x, y) {
-  await humanMove(tabId, x, y);
-  await sleep(rnd(80, 280));                 // 到位后停一下（人的悬停）
+async function inputMove(tabId, x, y, speed) {
+  await humanMove(tabId, x, y, speed || 1);
+  return { ok: true };
+}
+
+async function inputPress(tabId, x, y, speed) {
+  // 只负责按下+抬起：移动由 hoverHits 校验阶段完成，避免重复移动
+  await sleep(rnd(90, 220) * (speed || 1));        // 到位后的悬停停顿
   await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, modifiers: 1 });
-  await sleep(rnd(45, 130));                 // 按压时长
+  await sleep(rnd(60, 160) * (speed || 1));        // 按压时长
   const r = await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, modifiers: 0 });
   return r !== null;
 }
 
-async function inputWheel(tabId, x, y, notches) {
-  await humanMove(tabId, x, y);
+async function inputClick(tabId, x, y, speed) {
+  await humanMove(tabId, x, y, speed || 1);
+  return inputPress(tabId, x, y, speed);
+}
+
+async function inputWheel(tabId, x, y, notches, speed) {
+  await humanMove(tabId, x, y, speed || 1);
   for (let i = 0; i < Math.abs(notches); i++) {
     await cdp(tabId, "Input.dispatchMouseEvent", {
       type: "mouseWheel", x, y, deltaX: 0,
       deltaY: notches > 0 ? -120 : 120,
     });
-    await sleep(rnd(60, 220));
+    await sleep(rnd(90, 280) * (speed || 1));
   }
   return { ok: true };
 }
@@ -99,13 +109,12 @@ async function inputType(tabId, text, perCharMs) {
     const code = ch.codePointAt(0);
     const base = { text: ch, unmodifiedText: ch };
     if (code >= 0x20) {
-      // 控制字符（\n 等）不发 keydown 的 keyCode，避免触发快捷键
       base.key = ch; base.code = "KeyU"; base.keyCode = code; base.windowsVirtualKeyCode = code;
     }
     await cdp(tabId, "Input.dispatchKeyEvent", { type: "rawKeyDown", ...base });
     await cdp(tabId, "Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch });
     await cdp(tabId, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
-    await sleep(rnd(ms * 0.6, ms * 1.4));    // 抖动：不是节拍器
+    await sleep(rnd(ms * 0.6, ms * 1.4));          // 抖动：不是节拍器
   }
   return { ok: true };
 }
@@ -180,8 +189,10 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
   (async () => {
     const tabId = m.tabId ?? sender.tab?.id ?? null;
     if (m.t === "input" && tabId !== null) {
-      if (m.op === "click") reply(await inputClick(tabId, m.x, m.y));
-      else if (m.op === "wheel") reply(await inputWheel(tabId, m.x, m.y, m.notches));
+      if (m.op === "click") reply(await inputClick(tabId, m.x, m.y, m.speed));
+      else if (m.op === "move") reply(await inputMove(tabId, m.x, m.y, m.speed));
+      else if (m.op === "press") reply(await inputPress(tabId, m.x, m.y, m.speed));
+      else if (m.op === "wheel") reply(await inputWheel(tabId, m.x, m.y, m.notches, m.speed));
       else if (m.op === "type") reply(await inputType(tabId, m.text, m.perCharMs));
       else if (m.op === "hotkey") reply(await inputHotkey(tabId, m.keys));
       else reply({ ok: false });
