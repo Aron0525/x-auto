@@ -159,16 +159,9 @@
 
           <div class="sec-title">评论</div>
           <div class="row"><label>评论规则</label>
-            <select id="comment_rule">
-              <option value="mine">我的规则（短评·13字左右·上限20字）</option>
-              <option value="sop">原 SOP 规则（严格校验）</option>
-            </select></div>
-          <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05">
-            <span class="hint">每条帖子被评论的概率</span></div>
-          <div class="row"><label>目标字数</label><input type="number" id="comment_target_len" min="5" max="20">
-            <span class="hint">实际在 ±5 内随机，硬上限 20</span></div>
-          <div class="row"><label>评论去重</label><input type="checkbox" id="dedup_comment">
-            <span class="hint">同一帖只回一次</span></div>
+            <span class="hint" id="ruleSummary">在右侧「评论规则」卡片里切换</span>
+            <button id="openCommentRule2" class="ghost" style="padding:4px 12px">详细设置</button>
+          </div>
 
           <div class="sec-title">互动</div>
           <div class="row"><label>点赞概率</label><input type="number" id="like_prob" min="0" max="1" step="0.05"></div>
@@ -220,10 +213,40 @@
       <!-- 右列：LLM / 额度 / 视窗 / 维护 -->
       <div>
         <div class="card">
-          <h2>LLM 与每日上限</h2>
-          <div class="row"><label>API Key</label><input type="text" id="llm_key" placeholder="留空 = 模板兜底"></div>
+          <h2>API 配置（存本地，不用每次填）</h2>
+          <div class="row"><label>API Key</label><input type="text" id="llm_key" placeholder="留空 = 用模板兜底">
+          </div>
+          <div class="row" id="keyState" style="font-size:11px"></div>
           <div class="row"><label>Base URL</label><input type="text" id="llm_base"></div>
           <div class="row"><label>模型</label><input type="text" id="llm_model"></div>
+          <div class="row" style="flex-wrap:wrap">
+            <button id="saveLlm">保存 API 配置</button>
+            <button id="clearLlm" class="ghost">清除 Key</button>
+          </div>
+          <p style="color:#71767b;font-size:11px;margin:8px 0 0">
+            密钥只存在本机浏览器（<code>chrome.storage.local</code>），除了发给你填的模型接口外不发给任何地方。</p>
+        </div>
+        <div class="card">
+          <h2>评论规则 <span style="color:#71767b;font-size:11px;font-weight:400">全部参数与提示词</span></h2>
+          <p style="color:#71767b;font-size:12px;margin:0 0 10px">
+            语气、字数、提示词、模板句都在一个窗口里看和改。</p>
+          <button id="openCommentRule">打开评论规则窗口</button>
+          <div class="row" style="margin-top:10px;flex-wrap:wrap">
+            <label>评论规则</label>
+            <select id="comment_rule">
+              <option value="mine">我的规则（短评·13字左右·上限20字）</option>
+              <option value="sop">原 SOP 规则（严格校验）</option>
+            </select>
+          </div>
+          <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05">
+            <span class="hint">每条帖子被评论的概率</span></div>
+          <div class="row"><label>目标字数</label><input type="number" id="comment_target_len" min="5" max="20">
+            <span class="hint">实际在 ±5 内随机，硬上限 20</span></div>
+          <div class="row"><label>评论去重</label><input type="checkbox" id="dedup_comment">
+            <span class="hint">同一帖只回一次</span></div>
+        </div>
+        <div class="card">
+          <h2>每日上限</h2>
           <div class="row"><label>日赞上限</label><input type="number" id="max_like" min="0" max="200"></div>
           <div class="row"><label>日评上限</label><input type="number" id="max_reply" min="0" max="100"></div>
           <div class="row"><label>日关注上限</label><input type="number" id="max_follow" min="0" max="50"></div>

@@ -41,6 +41,8 @@ async function saveSettings() {
     const el = $(f);
     if (!el) continue;
     const raw = el.value;
+    // API Key 留空 = 保持原值，不覆盖已保存的密钥
+    if (f === "llm_key" && !raw.trim()) continue;
     s[f] = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob"].includes(f)
       ? Math.max(0, Math.min(1, parseFloat(raw) || 0))
       : f === "comment_target_len" ? Math.max(5, Math.min(20, parseInt(raw, 10) || 13))

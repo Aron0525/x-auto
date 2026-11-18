@@ -41,11 +41,60 @@ async function sendCmd(op) {
 // ---------------- 设置 ----------------
 
 async function loadSettings() {
-  const d = await chrome.storage.local.get(["xa_settings"]);
+  const d = await chrome.storage.local.get(["xa_settings", "xa_llm"]);
   const s = { ...DEFAULTS, ...(d.xa_settings || {}) };
   for (const f of FIELDS) if ($(f)) $(f).value = s[f] ?? "";
+  // API 配置放在独立的 xa_llm 里，优先级高于 xa_settings（迁移旧值）
+  const llm = d.xa_llm || {};
+  if (llm.apiKey) $("llm_key").value = llm.apiKey;
+  if (llm.baseUrl) $("llm_base").value = llm.baseUrl;
+  if (llm.model) $("llm_model").value = llm.model;
   $("notif_enabled").checked = !!s.notif_enabled;
   $("dedup_comment").checked = s.dedup_comment !== false;
+  updateKeyState();
+  const sum = $("ruleSummary");
+  if (sum) {
+    sum.textContent = s.comment_rule === "sop"
+      ? "原 SOP 规则（严格校验）"
+      : `我的规则 · ${s.comment_target_len ?? 13} 字左右 · 上限 20`;
+  }
+}
+
+/* API Key 状态提示：让人一眼看出「已保存」还是「还没填」。
+ * 密钥只存本地 chrome.storage.local，不上传任何服务器（除了发给模型接口本身）。 */
+function updateKeyState() {
+  const el = $("keyState");
+  if (!el) return;
+  const v = ($("llm_key").value || "").trim();
+  if (v) {
+    const mask = v.slice(0, 4) + "…" + v.slice(-4);
+    el.innerHTML = `<span class="pill on">已填写</span> <code>${esc(mask)}</code>` +
+      '<span style="color:#71767b"> 点「保存 API 配置」写入本地；下次打开自动带出</span>';
+  } else {
+    el.innerHTML = '<span class="pill off">未填写</span><span style="color:#71767b"> 不填也能跑，评论走短句模板兜底</span>';
+  }
+}
+
+async function saveLlm() {
+  const apiKey = ($("llm_key").value || "").trim();
+  const baseUrl = ($("llm_base").value || "").trim() || "https://api.deepseek.com/v1";
+  const model = ($("llm_model").value || "").trim() || "deepseek-flash";
+  // 留空不覆盖：用户可能只是想改模型名
+  const cur = (await chrome.storage.local.get(["xa_llm"])).xa_llm || {};
+  const next = { ...cur, baseUrl, model };
+  if (apiKey) next.apiKey = apiKey;   // 只有真填了才写，避免误清空
+  await chrome.storage.local.set({ xa_llm: next });
+  updateKeyState();
+  flash(apiKey ? "API 配置已保存到本地（下次自动带出）" : "已保存模型设置（密钥保持原值）", "on");
+}
+
+async function clearLlm() {
+  const cur = (await chrome.storage.local.get(["xa_llm"])).xa_llm || {};
+  delete cur.apiKey;
+  await chrome.storage.local.set({ xa_llm: cur });
+  $("llm_key").value = "";
+  updateKeyState();
+  flash("已清除本地保存的 API Key", "warn");
 }
 
 async function saveSettings() {
@@ -53,6 +102,8 @@ async function saveSettings() {
   for (const f of FIELDS) {
     const el = $(f);
     if (!el) continue;
+    // API Key 留空 = 保持原值，不覆盖已保存的密钥
+    if (f === "llm_key" && !el.value.trim()) continue;
     if (PROB.includes(f)) s[f] = Math.max(0, Math.min(1, parseFloat(el.value) || 0));
     else if (f === "speed") s[f] = Math.max(0.5, Math.min(3, parseFloat(el.value) || 1.5));
     else if (f === "comment_target_len") s[f] = Math.max(5, Math.min(20, parseInt(el.value, 10) || 13));
@@ -63,9 +114,16 @@ async function saveSettings() {
   if (s.write_gap_min > s.write_gap_max) s.write_gap_max = s.write_gap_min;
   s.notif_enabled = $("notif_enabled").checked;
   s.dedup_comment = $("dedup_comment").checked;
-  await chrome.storage.local.set({ xa_settings: s });
-  const ruleCn = s.comment_rule === "sop" ? "原 SOP 规则" : `我的规则（${s.comment_target_len} 字左右）`;
-  flash(`设置已保存 · 速度 ${s.speed} · 评论：${ruleCn}`, "on");
+
+  // 关键：与已有设置**合并**，不能整体替换。
+  // 侧边栏和这个控制台字段不完全相同，整体替换会互相抹掉对方保存的字段
+  // （API Key 丢失就是这么来的）。
+  const cur = (await chrome.storage.local.get(["xa_settings"])).xa_settings || {};
+  const merged = { ...cur, ...s };
+  await chrome.storage.local.set({ xa_settings: merged });
+
+  const ruleCn = merged.comment_rule === "sop" ? "原 SOP 规则" : `我的规则（${merged.comment_target_len} 字左右）`;
+  flash(`设置已保存 · 速度 ${merged.speed} · 评论：${ruleCn}`, "on");
 }
 
 function flash(msg, cls) {
@@ -427,6 +485,15 @@ document.addEventListener("click", (e) => {
 $("drillClose").onclick = closeDrill;
 $("drill").addEventListener("click", (e) => { if (e.target.id === "drill") closeDrill(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrill(); });
+
+$("openCommentRule").onclick = () => chrome.windows.create({
+  url: chrome.runtime.getURL("comment-rule.html"),
+  type: "popup", width: 980, height: 900,
+});
+$("openCommentRule2").onclick = $("openCommentRule").onclick;
+$("saveLlm").onclick = saveLlm;
+$("clearLlm").onclick = clearLlm;
+$("llm_key").oninput = updateKeyState;
 
 loadSettings();
 refresh();
