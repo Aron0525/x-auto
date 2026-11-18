@@ -10,7 +10,7 @@ const FIELDS = [...NUM, ...PROB, ...TEXT, "speed"];
 const DEFAULTS = {
   session_minutes: 30, typing_ms: 130, speed: 1.5, feed: "for_you",
   like_prob: 0.85, comment_prob: 0.8,
-  expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 3,
+  expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 5,
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,
@@ -170,9 +170,20 @@ async function refresh() {
     stEl.innerHTML = '<span class="pill bad">没找到 x.com 标签页</span> 请打开并登录 x.com';
     $("start").disabled = true; $("stop").disabled = true;
   } else {
-    const ping = await sendCmd("ping");
+    let ping = await sendCmd("ping");
     if (!ping) {
-      stEl.innerHTML = '<span class="pill warn">页面未注入</span> 点「修复页面注入」';
+      // 自动兜底注入：扩展重载后已开着的标签页里脚本是死的，直接补一次
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: xTabId },
+          files: ["sop.js", "comment.js", "content.js"],
+        });
+        await new Promise((r) => setTimeout(r, 400));
+        ping = await sendCmd("ping");
+      } catch (e) { /* 下面统一提示 */ }
+    }
+    if (!ping) {
+      stEl.innerHTML = '<span class="pill warn">页面未注入</span> 自动注入失败，点「重新注入」';
       $("start").disabled = false; $("stop").disabled = true;
     } else if (ping.running) {
       running = true;

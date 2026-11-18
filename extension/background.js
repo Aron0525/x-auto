@@ -45,7 +45,42 @@ async function cdp(tabId, method, params) {
   }
 }
 
-// ---------------- 拟人输入 ----------------
+// ---------------- 自动注入兜底 ----------------
+// manifest 的 content_scripts 只在**页面加载**时自动注入。真实坑：
+//   · 扩展重载/更新后，已经开着的 x.com 标签页里脚本是"死的"（旧代码上下文），
+//     必须重新注入才恢复 —— 这就是用户觉得"要一直点注入按钮"的原因。
+// 对策：安装/更新/浏览器启动 + 标签页加载完成时都兜底注入一次。
+// content.js 有 window.__XA_LOADED__ 守卫、sop/comment 用 globalThis 赋值，
+// 所以重复注入是幂等的，不会重跑会话。
+
+const CS_FILES = ["sop.js", "comment.js", "content.js"];
+
+async function injectTab(tabId) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: CS_FILES });
+    return true;
+  } catch (e) {
+    // chrome:// 页面、扩展未就绪等都会到这里，静默跳过
+    return false;
+  }
+}
+
+async function injectAllX() {
+  const tabs = await chrome.tabs.query({ url: "https://x.com/*" });
+  let n = 0;
+  for (const t of tabs) if (await injectTab(t.id)) n++;
+  return n;
+}
+
+chrome.runtime.onInstalled.addListener(() => { injectAllX().catch(() => {}); });
+chrome.runtime.onStartup.addListener(() => { injectAllX().catch(() => {}); });
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status !== "complete") return;
+  if (!/^https:\/\/x\.com\//.test(tab.url || "")) return;
+  injectTab(tabId).catch(() => {});
+});
+
+
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rnd = (a, b) => a + Math.random() * (b - a);
