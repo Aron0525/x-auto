@@ -160,39 +160,71 @@ globalThis.COMMENT_GEN = (() => {
    * 用户要求：什么帖子都能评、不超 20 字、最好 13 字左右且随机、内容 = 回应帖子 + 观点。
    * 这里给 LLM 一套极简指令，模板兜底也换成短句池（不再是 SOP 那套长模板）。 */
 
-  const MINE_SYSTEM = `你在 X（推特）上刷到一条帖子，随手回一句短评（中文）。
+  /* 默认提示词。控制台「评论规则」窗口里可整段替换。
+   * 占位符：{len} 目标字数、{lo}/{hi} 字数区间、{cap} 硬上限、{tone} 语气、{post} 原帖正文 */
+  const DEFAULT_MINE_PROMPT = `你在 X（推特）上刷到一条帖子，随手回一句短评（中文）。
 1. 先用半句回应原帖的具体内容，再表达你的观点或态度。
-2. 总长度不超过 20 个字，{len} 字左右最合适。只输出这一句话，不要引号、不要解释。
+2. 总长度不超过 {cap} 个字，{len} 字左右最合适。只输出这一句话，不要引号、不要解释。
 3. 像真人随口接话，可以有态度，但不阴阳怪气、不骂人、不引战。
 4. 不要话题标签（#），不要 @ 人，不要贴链接，不要推销自己。
 5. 不要用「说得很好」「学习了」「干货」「感谢分享」这类空话。`;
 
-  // 短句模板：{p} 放原帖抓出来的具体短语，保证「回应帖子」
-  const MINE_TEMPLATES = [
-    "「{p}」这点确实，我也这么看。",
-    "「{p}」有同感，不止一次了。",
-    "{p}，我觉得关键还是看执行。",
-    "「{p}」挺真实，代价也不小。",
-    "{p}，这个判断我认同。",
-    "「{p}」我持保留，但方向没错。",
-    "{p}说得在理，落地最难。",
-    "「{p}」——确实，越往后越明显。",
-    "{p}，我更看重它后面的影响。",
-    "「{p}」这条我收藏了，有用。",
-    "{p}，短期热闹，长期未必。",
-    "「{p}」说得挺实在，值得一试。",
+  // 短句模板默认池：{p} 放原帖抓出来的具体短语，保证「回应帖子」。
+  // 注意每条模板的固定字数要短，{p} 才留得出空间，整体才能落到 13 字左右。
+  const DEFAULT_MINE_TEMPLATES = [
+    "「{p}」确实，我也这么看。",
+    "「{p}」有同感。",
+    "{p}，关键还是看执行。",
+    "「{p}」真实，代价不小。",
+    "{p}，这判断我认同。",
+    "「{p}」我持保留。",
+    "{p}说得在理。",
+    "「{p}」越往后越明显。",
+    "{p}，我更看后续影响。",
+    "「{p}」我收藏了。",
+    "{p}，短期热闹长期未必。",
+    "「{p}」值得一试。",
+    "{p}，我也是这么想的。",
+    "「{p}」这点说到了。",
+    "{p}，不过落地最难。",
+    "「{p}」看长期吧。",
   ];
+
+  // 运行时使用的池子（可被面板覆盖）
+  let MINE_SYSTEM = DEFAULT_MINE_PROMPT;
+  let MINE_TEMPLATES = DEFAULT_MINE_TEMPLATES.slice();
+
+  /* 面板改过的提示词/模板灌进来。空值 = 用默认。 */
+  function applyCustom(beh) {
+    MINE_SYSTEM = (beh && beh.comment_prompt) || DEFAULT_MINE_PROMPT;
+    const raw = (beh && beh.comment_templates || "").trim();
+    MINE_TEMPLATES = raw
+      ? raw.split(/\n+/).map((s) => s.trim()).filter(Boolean)
+      : DEFAULT_MINE_TEMPLATES.slice();
+  }
 
   let lastMine = -1;
   function mineTemplate(post, len) {
-    const phrase = shortPhrase(post.text || "", Math.max(6, len - 6)) || "这个观点";
-    let idx = 0;
+    const { cap } = SOP.commentLength({ comment_target_len: len });
+    let tpl = MINE_TEMPLATES[0] || "";
     if (MINE_TEMPLATES.length > 1) {
       const choices = MINE_TEMPLATES.map((_, i) => i).filter((i) => i !== lastMine);
-      idx = choices[Math.floor(Math.random() * choices.length)];
+      lastMine = choices[Math.floor(Math.random() * choices.length)];
+      tpl = MINE_TEMPLATES[lastMine];
     }
-    lastMine = idx;
-    return MINE_TEMPLATES[idx].replaceAll("{p}", phrase);
+    // 关键：按模板本身的固定字数算「{p} 还能占多少」，否则长模板会撞 20 字上限被丢掉。
+    // 同时向目标字数靠拢：整句控制在 ~len，而不是把剩余空间用满（否则总是顶到上限）。
+    const fixed = tpl.replace("{p}", "").length;
+    const wantPhrase = Math.max(3, Math.min(len - fixed, cap - fixed - 1));
+    const phrase = shortPhrase(post.text || "", wantPhrase) || "这个观点";
+    return tpl.replaceAll("{p}", phrase);
+  }
+
+  // 占位符替换（提示词里可用 {len} {lo} {hi} {cap} {tone} {post}）
+  function fill(tpl, vars) {
+    let out = tpl;
+    for (const [k, v] of Object.entries(vars)) out = out.split("{" + k + "}").join(String(v));
+    return out;
   }
 
   /* ---------- 生成入口 ---------- */
@@ -201,6 +233,7 @@ globalThis.COMMENT_GEN = (() => {
     const body = (post.text || "").trim();
     if (!body) return { text: "", source: "none", error: "帖子没有正文，跳过" };
 
+    applyCustom(beh);        // 面板改过的提示词/模板在这里生效
     if (SOP.isMineMode(beh)) return generateMine(post, body, beh, llmCfg);
 
     if (llmCfg && llmCfg.apiKey && llmCfg.baseUrl && llmCfg.model) {
@@ -258,7 +291,9 @@ globalThis.COMMENT_GEN = (() => {
     };
 
     if (llmCfg && llmCfg.apiKey && llmCfg.baseUrl && llmCfg.model) {
-      const system = MINE_SYSTEM.replace("{len}", String(len));
+      const toneCn = { friendly: "随和", professional: "专业", humorous: "幽默",
+                       curious: "好奇", supportive: "共情", sharp: "直接" }[beh?.tone] || "随和";
+      const system = fill(MINE_SYSTEM, { len, lo, hi, cap, tone: toneCn, post: body.slice(0, 800) });
       let feedback = "";
       for (const attempt of [1, 2]) {
         let raw = "";
@@ -266,7 +301,7 @@ globalThis.COMMENT_GEN = (() => {
           raw = await chrome.runtime.sendMessage({
             t: "llm", system,
             user: `【帖子作者】${post.author || ""}\n【帖子正文】\n${body.slice(0, 800)}\n\n` +
-                  `【要求】${lo}~${hi} 个字（不超过 ${cap} 字），先回应帖子内容再表达观点。${feedback}`,
+                  `【要求】${lo}~${hi} 个字（不超过 ${cap} 字），先回应帖子内容再表达观点，语气${toneCn}。${feedback}`,
             cfg: llmCfg,
           });
         } catch (e) { raw = ""; }
@@ -275,17 +310,29 @@ globalThis.COMMENT_GEN = (() => {
         if (t) return { text: t, source: "llm", model: llmCfg.model, len: t.length, target: len, attempts: attempt };
         feedback = `\n\n【上一版不合格】字数或内容不符合要求（要求 ${lo}~${hi} 字，不超过 ${cap} 字），请重写一句。`;
       }
-      const tpl = mineTemplate(post, len);
-      const t = tryAccept(tpl);
+      const t = tryTemplates(post, len, beh);
       return { text: t || "", source: "template", target: len,
-               ...(t ? { note: "LLM 不合格，退回短句模板" } : { error: "模板也超出字数上限" }) };
+               ...(t ? { note: "LLM 不合格，退回短句模板" } : { error: "模板都超出字数上限，去「评论规则」窗口改短一点" }) };
     }
 
-    const tpl = mineTemplate(post, len);
-    const t = tryAccept(tpl);
+    const t = tryTemplates(post, len, beh);
     return { text: t || "", source: "template", target: len,
-             ...(t ? { note: "未配置密钥，短句模板兜底" } : { error: "模板超出字数上限" }) };
+             ...(t ? { note: "未配置密钥，短句模板兜底" } : { error: "模板都超出字数上限，去「评论规则」窗口改短一点" }) };
   }
 
-  return { generate, classifyScene, generateMine };
+  /* 模板兜底：随机顺序试模板，`{p}` 按每条模板的剩余空间截断，
+   * 某条实在放不下（模板本身太长）就换下一条，而不是整个失败。 */
+  function tryTemplates(post, len, beh, tries = 10) {
+    const n = Math.max(1, MINE_TEMPLATES.length);
+    for (let i = 0; i < Math.min(tries, n); i++) {
+      const t = mineTemplate(post, len);
+      if (!t) continue;
+      const [ok] = SOP.validateComment(t, post, beh);
+      if (ok) return t;
+    }
+    return "";
+  }
+
+  return { generate, classifyScene, generateMine, applyCustom, tryTemplates,
+           DEFAULT_MINE_PROMPT, DEFAULT_MINE_TEMPLATES };
 })();

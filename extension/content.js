@@ -575,8 +575,9 @@
   let busy = false;
 
   async function getBeh() {
-    const d = await chrome.storage.local.get(["xa_settings"]);
+    const d = await chrome.storage.local.get(["xa_settings", "xa_llm"]);
     const s = d.xa_settings || {};
+    const L = d.xa_llm || {};        // API 配置独立存放，优先于旧字段
     SPD = Math.max(0.5, Math.min(3, s.speed ?? 1.5));   // 全局速度系数生效点
     return {
       typing_ms: s.typing_ms ?? 130, session_minutes: s.session_minutes ?? 30,
@@ -598,8 +599,13 @@
       speed: s.speed ?? 1.5, feed: s.feed || "for_you",
       tone: s.tone || "friendly", style: s.style || "normal",
       limits: { like: s.max_like ?? 60, reply: s.max_reply ?? 20, follow: s.max_follow ?? 25 },
-      llm: { apiKey: s.llm_key || "", baseUrl: s.llm_base || "https://api.deepseek.com/v1",
-             model: s.llm_model || "deepseek-flash" },
+      llm: { apiKey: L.apiKey || s.llm_key || "",
+             baseUrl: L.baseUrl || s.llm_base || "https://api.deepseek.com/v1",
+             model: L.model || s.llm_model || "deepseek-flash" },
+      // 评论提示词与模板（评论规则窗口里可改）
+      comment_prompt: L.comment_prompt || s.comment_prompt || "",
+      comment_templates: L.comment_templates || s.comment_templates || "",
+      comment_ban_words: L.comment_ban_words || s.comment_ban_words || "",
       notif_enabled: !!s.notif_enabled,
     };
   }
