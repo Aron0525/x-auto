@@ -1283,6 +1283,13 @@
 
     if (followAct) acts.follow = true;
     await recordTweet({ ...(ctx.current || {}), handle }, acts);
+
+    // 从通知页的新粉丝点进来的 → 回通知页继续处理下一条；否则回首页
+    if (ctx.fromNotif) {
+      delete ctx.fromNotif;
+      ctx.phase = "notif"; ctx.tabDone = false;
+      await gotoNotifications(); saveCtx(ctx); return;
+    }
     ctx.phase = "home"; ctx.tabDone = false;
     await goHome(); saveCtx(ctx);
   }
@@ -1383,11 +1390,32 @@
     ctx.phase = "home"; await goHome(); saveCtx(ctx);
   }
 
+  /* 通知页先滚几屏把列表加载出来。
+   * 通知是虚拟列表，一屏只有 5~6 条；新粉丝常常在下面，不滚就漏。 */
+  async function scrollNotificationsToLoad() {
+    let last = 0;
+    for (let i = 0; i < 8; i++) {
+      const n = document.querySelectorAll(SEL.cell).length;
+      if (n > last) {
+        last = n;
+        await scrollBy(ri(2, 3));
+        await sleep(rnd(1200, 2200) * SPD);
+      } else if (i > 0) {
+        break;        // 连续两次没新增 → 到头
+      }
+    }
+    // 滚回顶部，后续点卡片时坐标才对
+    for (let i = 0; i < 6; i++) { await scrollBy(-3); await sleep(rnd(250, 500) * SPD); }
+    await sleep(rnd(600, 1200) * SPD);
+  }
+
   async function stepNotif(beh) {
     if (!onNotif()) { await gotoNotifications(); return; }
     if (!ctx.notifTodo.length && !ctx.notifLoaded) {
       const me = whoami();
-      const items = readNotifications(20, me);
+      // 【修】通知列表一屏放不下，先滚动加载几屏再收集，否则底部的新粉丝会被漏掉
+      await scrollNotificationsToLoad();
+      const items = readNotifications(40, me);
       const s = await storeGet();
       // 分类处理（用户策略）：回复类要回；关注类要去看主页；点赞类不管
       const replyables = [];
@@ -1413,36 +1441,81 @@
       ctx.phase = "home"; ctx.tabDone = false;   // feed 保持会话开始时的设置
       await goHome(); saveCtx(ctx); return;
     }
-    if (Date.now() > ctx.started + (ctx.deadline - ctx.started) * 0.2) {
-      // 通知只占前 20% 时间（SOP 11）
-      await logAct("通知时间配额用完，回首页");
+    /* 时间配额：通知阶段总共占会话前 20%，但**回复类和关注类分开算**。
+     * 以前用同一个 20% 闸，回复一多就把时间吃光，新粉丝永远轮不到。
+     * 现在：回复类用 20% 配额；关注类额外给到 40%（关注是要进主页翻帖的，本来就慢）。 */
+    const it = ctx.notifTodo.shift();
+    const isFollowTask = it.kind === "follow";
+    const share = ctx.deadline - ctx.started;
+    const limitPct = isFollowTask ? 0.4 : 0.2;
+    if (Date.now() > ctx.started + share * limitPct) {
+      await logAct(isFollowTask
+        ? `通知回关时间配额用完（${Math.round(limitPct * 100)}%），回首页`
+        : `通知回复时间配额用完（${Math.round(limitPct * 100)}%），回首页`, "wait");
       ctx.phase = "home"; ctx.tabDone = false;
       await goHome(); saveCtx(ctx); return;
     }
-    const it = ctx.notifTodo.shift();
 
     // 找这条通知在页面上的卡片
-    const cell = [...document.querySelectorAll(SEL.cell)].find((c) => {
+    const findCell = () => [...document.querySelectorAll(SEL.cell)].find((c) => {
       if (it.kind === "follow") {
-        const a = c.querySelector(SEL.userNameLink);
-        const h = ((a && a.getAttribute("href")) || "").replace(/^\//, "").split("/")[0];
-        return h && h.toLowerCase() === it.handle.toLowerCase() && /(followed you|关注了你)/i.test(c.innerText || "");
+        // 关注类卡片：文案含 followed you/关注了你，且卡片里能找到这个人的链接
+        const txt = c.innerText || "";
+        if (!/(followed you|关注了你|开始关注你)/i.test(txt)) return false;
+        // 聚合卡片（"A and 5 others followed you"）里有多个头像，逐个比对
+        const links = [...c.querySelectorAll('a[href^="/"]')]
+          .map((a) => (a.getAttribute("href") || "").replace(/^\//, "").split("/")[0].toLowerCase());
+        return links.includes(it.handle.toLowerCase());
       }
       return !!c.querySelector(`a[href*="/status/${it.id}"]`);
     });
 
+    let cell = findCell();
+    // 卡片还没渲染出来（虚拟列表）→ 往下滚找一找
+    if (!cell) {
+      for (let i = 0; i < 5 && !cell; i++) {
+        await scrollBy(ri(2, 3));
+        await sleep(rnd(1200, 2000) * SPD);
+        cell = findCell();
+      }
+    }
+
     if (it.kind === "follow") {
-      // 别人关注了我 → 点进他的主页（看帖点赞后关注），而不是点帖子
-      const link = cell && (cell.querySelector(SEL.userNameLink) || cell.querySelector(`a[href="/${it.handle}"]`));
-      if (!link) {
-        await logAct(`新粉丝 @${it.handle}：通知里没找到他的头像链接，跳过`, "skip");
+      if (!cell) {
+        await logAct(`新粉丝 @${it.handle}：通知页没找到他的卡片，跳过`, "skip");
         saveCtx(ctx); return;
       }
-      if (!(await clickEl(link, { settle: [1500, 2600] }))) { saveCtx(ctx); return; }
+      /* 别人关注了我 → 点进他的主页（看帖点赞后关注）。
+       * 聚合卡片（"A and 5 others followed you"）里有多个头像，必须点**这个人自己的**
+       * 那个链接，不能点第一个 —— 否则会跑到别人主页去关注错人。 */
+      const cands = [...cell.querySelectorAll('a[href^="/"]')].filter((a) => {
+        const h = (a.getAttribute("href") || "").replace(/^\//, "").split("/")[0].toLowerCase();
+        return h === it.handle.toLowerCase();
+      });
+      const link = cands[0];
+      if (!link) {
+        await logAct(`新粉丝 @${it.handle}：卡片里找不到他的头像链接，跳过`, "skip");
+        saveCtx(ctx); return;
+      }
+      if (!(await clickEl(link, { settle: [1500, 2600] }))) {
+        await logAct(`新粉丝 @${it.handle}：点头像进主页失败，跳过`, "fail");
+        saveCtx(ctx); return;
+      }
+      // 确认真的到了他的主页（慢网/点偏都可能停在通知页）
+      await waitContent(1, 15000, "作者主页");
+      const onProfile = (() => {
+        const cur = location.pathname.replace(/^\//, "").split("/")[0].toLowerCase();
+        return cur === it.handle.toLowerCase();
+      })();
+      if (!onProfile) {
+        await logAct(`新粉丝 @${it.handle}：没进到他的主页（当前 ${location.pathname}），跳过`, "skip");
+        ctx.phase = "notif"; await gotoNotifications(); saveCtx(ctx); return;
+      }
       ctx.current = { handle: it.handle, text: "", id: "", href: `/${it.handle}` };
       ctx.pendingActs = {};
+      ctx.fromNotif = true;          // 处理完回通知页，而不是首页
       ctx.phase = "profile";
-      await logAct(`新粉丝 @${it.handle} → 点进主页看帖再决定关注`, "nav");
+      await logAct(`新粉丝 @${it.handle} → 已进入主页，开始浏览帖子再关注`, "nav");
       saveCtx(ctx);
       return;
     }

@@ -21,7 +21,7 @@ const DEFAULTS = {
   my_handles: "johnJackyoi0f, 4395Aron",
   min_read_before_refresh: 12,
   follow_gap_min: 60, follow_gap_max: 180, follow_per_hour: 8,
-  tone: "friendly", style: "normal", notif_enabled: false,
+  tone: "friendly", style: "normal", notif_enabled: true,
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,
 };
