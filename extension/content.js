@@ -40,10 +40,12 @@
     appClose: '[data-testid="app-bar-close"]',
     userCell: '[data-testid="UserCell"]',   // 详情页右侧 Relevant People 的作者行
     navExplore: '[data-testid="AppTabBar_Explore_Link"]',
-    showMore: '[data-testid="tweet-text-show-more-link"], [aria-label="Show more"]',
-    newPostsBtn: '[aria-label="New posts"], [data-testid="floatingButton"], [data-testid="scrollToTopButton"]',
+    // 长文折叠的「显示更多」——中英文界面都是同一个 data-testid，但要按文案兜底
+    showMore: '[data-testid="tweet-text-show-more-link"]',
+    // 顶部「新帖」提示条：优先 data-testid（界面语言无关），aria-label 只作兜底
+    newPostsBtn: '[data-testid="newTweetsPill"], [data-testid="floatingButton"], [data-testid="scrollToTopButton"], [aria-label="New posts"], [aria-label="新帖子"]',
     // 时间线顶部的「Show N posts」按钮（有新帖待加载时出现），点它直接拉新一批
-    showPostsBtn: '[data-testid="newTweetsPill"], [data-testid="pillButton"], button[aria-label*="posts"]',
+    showPostsBtn: '[data-testid="newTweetsPill"], [data-testid="pillButton"], button[aria-label*="posts"], button[aria-label*="帖子"]',
   };
 
   const DISCARD_TEXTS = ["不保存", "放弃", "丢弃", "Discard", "Don't save"];
@@ -328,21 +330,40 @@
     return onHome();
   }
 
+  /* 顶部 Feed 栏目：**必须同时认中英文**。
+   * X 的界面语言跟着账号走 —— 正式号是中文界面（「为你推荐 / 正在关注」），
+   * 旧代码写死 /For you/ 就必然找不到按钮。 */
+  const FEED_LABELS = {
+    for_you:   { re: /^(For you|为你推荐|为你|推荐)$/i,        cn: "为你推荐" },
+    following: { re: /^(Following|正在关注|关注)$/i,            cn: "正在关注" },
+  };
+
   async function switchFeedTab(kind) {
-    const re = kind === "following" ? /Following/i : /For you/i;
-    const tab = [...document.querySelectorAll(SEL.tab)].find((t) => re.test(t.innerText || ""));
-    if (!tab) { await logAct("没找到顶部栏目按钮（For You / Following），按当前栏目继续"); return false; }
+    const spec = FEED_LABELS[kind] || FEED_LABELS.for_you;
+    // 先按精确文案匹配，匹配不到再退化成「包含」匹配（栏目标签可能带角标/省略）
+    const tabs = [...document.querySelectorAll(SEL.tab)];
+    let tab = tabs.find((t) => spec.re.test(norm(t.innerText)));
+    if (!tab) {
+      tab = tabs.find((t) => {
+        const tx = norm(t.innerText);
+        return tx.length <= 12 && (/for you|为你推荐/i.test(tx) === (kind !== "following"));
+      });
+    }
+    if (!tab) {
+      await logAct(`没找到顶部栏目按钮（${spec.cn}），按当前栏目继续`, "wait");
+      return false;
+    }
     if (tab.getAttribute("aria-selected") === "true") {
-      await logAct(`已在 ${kind === "following" ? "Following" : "For You"} 栏目，无需切换`);
+      await logAct(`已在「${spec.cn}」栏目，无需切换`);
       return true;
     }
     const before = timelineSig();
-    const label = kind === "following" ? "Following" : "For You";
+    const label = spec.cn;
     if (!(await clickEl(tab, { settle: [1500, 2600] }))) return false;
     // 慢网：切栏目后时间线要重新拉取，等内容真的换一批再开始读
     await waitContent(1, 25000, label + " 栏目");
     const changed = await waitTimelineChange(before, 15000, label + " 栏目");
-    await logAct(`已切到 ${label} 栏目${changed ? "（内容已更新）" : "（内容未见变化，继续）"}`);
+    await logAct(`已切到「${label}」栏目${changed ? "（内容已更新）" : "（内容未见变化，继续）"}`);
     return true;
   }
 
@@ -469,6 +490,7 @@
       '[data-testid="AppTabBar_Profile_Link"]',
       '[data-testid="SideNav_AccountSwitcher_Button"]',
       'a[aria-label="Profile"]',
+      'a[aria-label="个人资料"]',
       '[data-testid="DashButton_ProfileIcon_Link"]',
     ];
     for (const sel of tries) {
