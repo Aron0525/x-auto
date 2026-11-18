@@ -45,6 +45,12 @@
     <div class="row"><label>打字 ms/字</label><input type="number" id="typing_ms" min="50" max="500"></div>
     <div class="row"><label>点赞概率</label><input type="number" id="like_prob" min="0" max="1" step="0.05"></div>
     <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05"></div>
+    <div class="row"><label>评论规则</label>
+      <select id="comment_rule">
+        <option value="mine">我的规则（短评·13字左右·上限20字）</option>
+        <option value="sop">原 SOP 规则（严格校验）</option>
+      </select></div>
+    <div class="row"><label>评论文数</label><input type="number" id="comment_target_len" min="5" max="20"></div>
     <div class="row"><label>发现页概率</label><input type="number" id="explore_prob" min="0" max="1" step="0.05"></div>
     <div class="row"><label>展开概率</label><input type="number" id="expand_prob" min="0" max="1" step="0.05"></div>
     <div class="row"><label>收藏概率</label><input type="number" id="bookmark_prob" min="0" max="1" step="0.05"></div>

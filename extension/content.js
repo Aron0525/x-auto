@@ -339,6 +339,13 @@
     return true;
   }
 
+  // 写操作间隔（评论之间）：面板可调秒数区间，随机取，再乘速度系数
+  function writeGap(beh) {
+    const lo = Math.max(5, beh.write_gap_min ?? 30);
+    const hi = Math.max(lo, beh.write_gap_max ?? 90);
+    return rnd(lo, hi) * 1000 * SPD;
+  }
+
   // ---------------- 读取 ----------------
 
   function readTweets(n = 12) {
@@ -553,6 +560,17 @@
       like_prob: s.like_prob ?? 0.85, comment_prob: s.comment_prob ?? 0.85,
       expand_prob: s.expand_prob ?? 0.9, bookmark_prob: s.bookmark_prob ?? 0.3,
       explore_prob: s.explore_prob ?? 0.5,
+      // 评论规则：默认走用户规则（mine）；sop = 原来的严格规则
+      comment_rule: s.comment_rule || "mine",
+      comment_target_len: s.comment_target_len ?? 13,
+      // 高级 SOP 参数
+      like_prob_cap: s.like_prob_cap ?? 0.9,
+      comment_prob_cap: s.comment_prob_cap ?? 1,
+      expand_char_min: s.expand_char_min ?? 220,
+      write_gap_min: s.write_gap_min ?? 30,
+      write_gap_max: s.write_gap_max ?? 90,
+      dedup_comment: s.dedup_comment !== false,
+      focus_keywords: s.focus_keywords || "",
       follow_per_session: s.follow_per_session ?? 5,
       speed: s.speed ?? 1.5, feed: s.feed || "for_you",
       tone: s.tone || "friendly", style: s.style || "normal",
@@ -565,6 +583,7 @@
 
   async function startSession() {
     const beh = await getBeh();
+    SOP.setExtraKeywords(beh.focus_keywords);   // 面板自定义的重点关键词生效
     ctx = { run: true, phase: beh.notif_enabled ? "notif" : "home",
             feed: beh.feed, deadline: Date.now() + beh.session_minutes * 60000,
             started: Date.now(), seen: [], stats: { read: 0, expanded: 0, liked: 0,
@@ -635,12 +654,20 @@
       `"${norm(tw.text).slice(0, 60) || "（无文字内容）"}"（全文 ${tw.text.length} 字）`);
     await sleep(rnd(1200, 5000) * SPD);        // 真人扫读停顿
 
-    const [skip, why] = SOP.shouldSkip(tw);
+    const [skip, why] = SOP.shouldSkip(tw, beh);
     if (skip) { ctx.stats.skipped++; await logAct(`滑过：${why}`); await recordTweet(tw, { skip: why }); saveCtx(ctx); return; }
+
+    // 评论去重（面板可关）：同一帖只回一次，避免重复刷同一帖
+    let doCmtGate = true, whyDedup = "";
+    if (SOP.isMineMode(beh) && beh.dedup_comment) {
+      const st0 = await storeGet();
+      if (st0.replied[tw.id]) { doCmtGate = false; whyDedup = "这帖已经回过（去重）"; }
+    }
 
     const expand = SOP.shouldExpand(tw, beh);
     const [doLike, whyLike] = SOP.shouldLike(tw, beh);
-    const [doCmt, whyCmt] = SOP.shouldComment(tw, beh);
+    let [doCmt, whyCmt] = SOP.shouldComment(tw, beh);
+    if (!doCmtGate) { doCmt = false; whyCmt = whyDedup; }
     const [doBm] = SOP.shouldBookmark(tw, beh);
     // 要评论就必须点开（回复框在详情页里）；看到的所有帖子都按概率摇赞/评
     const open = expand || doCmt;
@@ -745,8 +772,8 @@
             s.replied[tw.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
           });
           acts.comment = text.slice(0, 120);
-          await logAct(`✓ 评论 @${post.handle}：${text.slice(0, 40)}`);
-          await sleep(rnd(30000, 90000) * SPD);   // 写操作间隔：真人不会连发
+          await logAct(`✓ 评论 @${post.handle}：${text}（${text.length} 字）`);
+          await sleep(writeGap(beh));   // 写操作间隔：真人不会连发
         } else {
           await logAct(`✗ 评论失败：${r.error}`);
         }
@@ -843,7 +870,7 @@
     for (const t of picked) {
       await sleep(rnd(1000, 2500) * SPD);
       const canCmt = (await budgetLeft("reply", beh.limits.reply)) > 0 && SOP.shouldComment(t, beh)[0];
-      const canLike = (await budgetLeft("like", beh.limits.like)) > 0 && !SOP.shouldSkip(t)[0];
+      const canLike = (await budgetLeft("like", beh.limits.like)) > 0 && !SOP.shouldSkip(t, beh)[0];
       const wantCmt = canCmt && (!canLike || Math.random() < 0.5);   // 两边都行时五五开
       if (wantCmt) {
         const gen = await COMMENT_GEN.generate(t, beh, beh.llm);
@@ -864,7 +891,7 @@
               });
               await recordTweet(t, { comment: text.slice(0, 120) });
               await logAct(`✓ 主页互动：评论 @${handle}：${text.slice(0, 40)}`);
-              await sleep(rnd(20000, 60000) * SPD);
+              await sleep(writeGap(beh));
             } else {
               await logAct(`✗ 主页互动评论失败：${r.error}`);
             }

@@ -107,6 +107,14 @@
           <div class="row"><label>展开概率</label><input type="number" id="expand_prob" min="0" max="1" step="0.05"></div>
           <div class="row"><label>点赞概率</label><input type="number" id="like_prob" min="0" max="1" step="0.05"></div>
           <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>评论规则</label>
+            <select id="comment_rule">
+              <option value="mine">我的规则（短评·13字左右·上限20字）</option>
+              <option value="sop">原 SOP 规则（严格校验）</option>
+            </select>
+            <span style="color:#71767b">我的规则：什么帖子都能评，只卡 20 字上限</span></div>
+          <div class="row"><label>评论文数</label><input type="number" id="comment_target_len" min="5" max="20">
+            <span style="color:#71767b">我的规则下目标字数，实际在 ±5 内随机（硬上限 20）</span></div>
           <div class="row"><label>发现页概率</label><input type="number" id="explore_prob" min="0" max="1" step="0.05">
             <span style="color:#71767b">发现页遇到可关注用户时进主页查看的概率</span></div>
           <div class="row"><label>收藏概率</label><input type="number" id="bookmark_prob" min="0" max="1" step="0.05"></div>
@@ -123,6 +131,21 @@
             </select></div>
           <div class="row"><label>处理通知</label><input type="checkbox" id="notif_enabled">
             <span style="color:#71767b">开会话先花 20% 时间回通知</span></div>
+        </div>
+        <div class="card">
+          <h2>SOP 判定参数（高级）</h2>
+          <div class="row"><label>评论去重</label><input type="checkbox" id="dedup_comment">
+            <span style="color:#71767b">同一帖只回一次（关掉可能重复评同一帖）</span></div>
+          <div class="row"><label>点赞概率上限</label><input type="number" id="like_prob_cap" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>评论概率上限</label><input type="number" id="comment_prob_cap" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>展开字数门槛</label><input type="number" id="expand_char_min" min="0" max="2000" step="10">
+            <span style="color:#71767b">正文超过这个字数就点进详情页细看</span></div>
+          <div class="row"><label>写操作间隔下限</label><input type="number" id="write_gap_min" min="5" max="600">
+            <span style="color:#71767b">秒；两次评论之间的最小间隔</span></div>
+          <div class="row"><label>写操作间隔上限</label><input type="number" id="write_gap_max" min="5" max="900">
+            <span style="color:#71767b">秒；实际间隔在这个区间随机</span></div>
+          <div class="row"><label>重点关键词</label><input type="text" id="focus_keywords">
+            <span style="color:#71767b">逗号分隔，命中加分（默认：股市/AI/半导体/经济）</span></div>
         </div>
       </div>
       <div>

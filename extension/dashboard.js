@@ -2,15 +2,21 @@
 
 const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "typing_ms", "follow_per_session",
-             "max_like", "max_reply", "max_follow"];
-const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob"];
-const TEXT = ["tone", "style", "feed", "llm_key", "llm_base", "llm_model"];
+             "max_like", "max_reply", "max_follow",
+             "comment_target_len", "expand_char_min", "write_gap_min", "write_gap_max"];
+const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob",
+              "like_prob_cap", "comment_prob_cap"];
+const TEXT = ["tone", "style", "feed", "llm_key", "llm_base", "llm_model",
+              "comment_rule", "focus_keywords"];
 const FIELDS = [...NUM, ...PROB, ...TEXT, "speed"];
 
 const DEFAULTS = {
   session_minutes: 30, typing_ms: 130, speed: 1.5, feed: "for_you",
   like_prob: 0.85, comment_prob: 0.85, explore_prob: 0.5,
   expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 5,
+  comment_rule: "mine", comment_target_len: 13,
+  like_prob_cap: 0.9, comment_prob_cap: 1, expand_char_min: 220,
+  write_gap_min: 30, write_gap_max: 90, dedup_comment: true, focus_keywords: "",
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,
@@ -39,6 +45,7 @@ async function loadSettings() {
   const s = { ...DEFAULTS, ...(d.xa_settings || {}) };
   for (const f of FIELDS) if ($(f)) $(f).value = s[f] ?? "";
   $("notif_enabled").checked = !!s.notif_enabled;
+  $("dedup_comment").checked = s.dedup_comment !== false;
 }
 
 async function saveSettings() {
@@ -48,12 +55,17 @@ async function saveSettings() {
     if (!el) continue;
     if (PROB.includes(f)) s[f] = Math.max(0, Math.min(1, parseFloat(el.value) || 0));
     else if (f === "speed") s[f] = Math.max(0.5, Math.min(3, parseFloat(el.value) || 1.5));
+    else if (f === "comment_target_len") s[f] = Math.max(5, Math.min(20, parseInt(el.value, 10) || 13));
     else if (NUM.includes(f)) s[f] = Math.max(0, parseInt(el.value, 10) || 0);
     else s[f] = el.value.trim();
   }
+  // 写操作间隔：确保下限 ≤ 上限
+  if (s.write_gap_min > s.write_gap_max) s.write_gap_max = s.write_gap_min;
   s.notif_enabled = $("notif_enabled").checked;
+  s.dedup_comment = $("dedup_comment").checked;
   await chrome.storage.local.set({ xa_settings: s });
-  flash(`设置已保存 · 速度系数 ${s.speed}`, "on");
+  const ruleCn = s.comment_rule === "sop" ? "原 SOP 规则" : `我的规则（${s.comment_target_len} 字左右）`;
+  flash(`设置已保存 · 速度 ${s.speed} · 评论：${ruleCn}`, "on");
 }
 
 function flash(msg, cls) {
