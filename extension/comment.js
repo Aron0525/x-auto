@@ -100,16 +100,63 @@ globalThis.COMMENT_GEN = (() => {
     return window.slice(0, limit - 1) + "…";
   }
 
+  /* 从原帖里挑一个「值得回应的具体短语」。
+   * 之前的坑：不分内容质量地挑最长的子句再硬截断，结果拼出
+   *   「5、开源免…」这种数字开头的残句 + 模板尾巴，人能看出来是机器拼的。
+   * 现在：① 剔掉列表序号/编号开头的；② 剔掉信息量太低的；
+   *       ③ 优先带观点或事实的句子；④ 宁可返回空也不返回残句。 */
+  const LOW_INFO = /^(今天|昨天|最近|感觉|觉得|这个|那个|我们|他们|还是|就是|然后|所以|但是|不过|其实|可能)/;
+  // 纯虚词/口语填充：整句都是这些，说明没实质内容
+  const FILLER = /^(这个|那个|这样|那样|这些|那些|一下|真的|确实|应该|可以|需要|东西|事情|问题|时候|地方|感觉|觉得|其实|反正|基本|大概)+$/;
+
+  function usablePhrase(s) {
+    if (!s || s.length < 6) return false;
+    if (/^[\d\s.、,，)）]/.test(s)) return false;          // 数字/序号开头（"5、开源免…"）
+    if (/…|\.\.\.|．{2,}/.test(s)) return false;           // 自带省略号的残句（原文被截断过）
+    if (/^[a-zA-Z]{1,3}$/.test(s)) return false;
+    if (LOW_INFO.test(s) && s.length < 14) return false;   // 开头就是口头语且太短
+    if (FILLER.test(s)) return false;                      // 全是填充词
+    if (/(^|\s)(https?:\/\/|www\.)/.test(s)) return false;
+    // 至少要有一个「实词感」的字：去掉标点和常见虚词后仍有 4 个字以上
+    const solid = s.replace(/[的了吗呢吧啊呀哦嗯是在有不我你他她们这那和就都也很还都]/g, "");
+    if (solid.length < 4) return false;
+    return true;
+  }
+
   function shortPhrase(text, limit = 16) {
-    const clauses = (text || "").split(CLAUSE_SPLIT).map((c) => c.trim(" ，,、：:")).filter((c) => c);
-    const pool = clauses.filter((c) => c.length >= 6 && c.length <= 40);
-    if (!pool.length) return "";
-    const w = (c) => {
+    const clauses = (text || "").split(CLAUSE_SPLIT)
+      .map((c) => c.trim().replace(/^[\s\d.、,，)）(（]+/, "").replace(/[，,、：:]+$/, ""))
+      .filter(Boolean)
+      .filter(usablePhrase);
+    if (!clauses.length) return "";
+
+    const scored = clauses.map((c) => {
       let s = 0;
       for (const kw of SOP.INTEREST_KEYWORDS) if (c.toLowerCase().includes(kw.toLowerCase())) s += 1.0;
-      return s - Math.abs(c.length - 16) / 20.0;
-    };
-    return cut(pool.reduce((a, b) => (w(b) > w(a) ? b : a)), limit);
+      if (SOP.focusHit && SOP.focusHit(c)) s += 1.2;
+      if (c.includes("因为") || c.includes("所以") || c.includes("但是") || c.includes("不过")) s += 0.6;
+      if (/\d/.test(c)) s += 0.3;
+      return { c, s };
+    });
+    scored.sort((a, b) => b.s - a.s);
+
+    /* 【纪律】只返回「能独立读通的完整片段」，绝不硬切。
+     * 之前硬切出来的「半导体周期见」「我觉得这个工」，人一眼就能看出是机器拼的。 */
+    const MIN = 4;
+    // ① 整句就是合适长度的短语
+    const fit = scored.find((x) => x.c.length >= MIN && x.c.length <= limit);
+    if (fit) return fit.c;
+
+    // ② 按标点切成小段，取第一段长度合适的
+    for (const { c } of scored) {
+      const parts = c.split(/[，,、；;]/).map((s) => s.trim()).filter((s) => s.length >= MIN);
+      const p = parts.find((s) => s.length <= limit);
+      if (p) return p;
+    }
+
+    // ③ 都不合适 → 返回空。调用方会改用「不带短语的纯观点句」，
+    //    宁可少一点针对性，也不发断句。
+    return "";
   }
 
   const TYPE_HINTS = {
@@ -160,34 +207,42 @@ globalThis.COMMENT_GEN = (() => {
    * 用户要求：什么帖子都能评、不超 20 字、最好 13 字左右且随机、内容 = 回应帖子 + 观点。
    * 这里给 LLM 一套极简指令，模板兜底也换成短句池（不再是 SOP 那套长模板）。 */
 
-  /* 默认提示词。控制台「评论规则」窗口里可整段替换。
-   * 占位符：{len} 目标字数、{lo}/{hi} 字数区间、{cap} 硬上限、{tone} 语气、{post} 原帖正文 */
-  const DEFAULT_MINE_PROMPT = `你在 X（推特）上刷到一条帖子，随手回一句短评（中文）。
-1. 先用半句回应原帖的具体内容，再表达你的观点或态度。
-2. 总长度不超过 {cap} 个字，{len} 字左右最合适。只输出这一句话，不要引号、不要解释。
-3. 像真人随口接话，可以有态度，但不阴阳怪气、不骂人、不引战。
-4. 不要话题标签（#），不要 @ 人，不要贴链接，不要推销自己。
-5. 不要用「说得很好」「学习了」「干货」「感谢分享」这类空话。`;
+  /* 默认提示词（对齐用户给的 CommentPrompts.kt 思路，但字数按本插件规则压到 ≤20）。
+   * 核心：每条评论必须做两件事 —— ① 对内容有具体回应，不能是放之四海皆准的空话；
+   *       ② 表达自己的观点，不是把原文换个说法复述。
+   * 占位符：{len} 目标字数、{lo}/{hi} 区间、{cap} 硬上限、{tone} 语气、{post} 原帖正文 */
+  const DEFAULT_MINE_PROMPT = `你是一个评论回复助手，负责根据帖子的内容写出可以公开发表的评论。
 
-  // 短句模板默认池：{p} 放原帖抓出来的具体短语，保证「回应帖子」。
-  // 注意每条模板的固定字数要短，{p} 才留得出空间，整体才能落到 13 字左右。
+每条评论必须做两件事：
+第一，对帖子的具体内容有回应 —— 要指向帖子里真实提到的那个东西（说了什么、做了什么、遇到什么问题），
+不是"很有道理""值得思考"这种放到任何帖子下面都成立的话。
+第二，表达你自己的观点 —— 可以是认同并补充、也可以是保留意见，但不能只是把原文换个说法复述一遍。
+
+要求：
+- 语言跟随原文（原文中文就用中文）。
+- 每条不超过 {cap} 个字，{len} 字左右最合适，口语一点，像真人随口接一句。
+- 只输出这一句评论本身，不要引号、不要解释、不要分点。
+- 不要客套话，不要堆表情，不要加话题标签（#），不要 @ 人，不要贴链接。
+- 不要编造数据或亲历（别说"我测过""我朋友在做"这类没发生的事）。
+- 不阴阳怪气、不骂人、不引战、不评价作者本人。
+
+语气：{tone}`;
+
+  // 短句模板默认池：{p} 放原帖里的一句**完整短语**（已保证能独立读通）。
+  // 设计原则：模板固定字数尽量短，让 {p} 有空间；接读起来通顺，不像机器拼接。
   const DEFAULT_MINE_TEMPLATES = [
-    "「{p}」确实，我也这么看。",
-    "「{p}」有同感。",
+    "「{p}」，我也有同样感觉。",
+    "「{p}」这点我认同。",
     "{p}，关键还是看执行。",
-    "「{p}」真实，代价不小。",
-    "{p}，这判断我认同。",
-    "「{p}」我持保留。",
-    "{p}说得在理。",
-    "「{p}」越往后越明显。",
-    "{p}，我更看后续影响。",
+    "「{p}」确实，代价不小。",
+    "{p}，我持保留态度。",
+    "「{p}」说得挺实在。",
+    "{p}，我更看重长期。",
     "「{p}」我收藏了。",
     "{p}，短期热闹长期未必。",
-    "「{p}」值得一试。",
-    "{p}，我也是这么想的。",
-    "「{p}」这点说到了。",
+    "「{p}」这个判断有道理。",
     "{p}，不过落地最难。",
-    "「{p}」看长期吧。",
+    "「{p}」值得试试。",
   ];
 
   // 运行时使用的池子（可被面板覆盖）
@@ -195,6 +250,13 @@ globalThis.COMMENT_GEN = (() => {
   let MINE_TEMPLATES = DEFAULT_MINE_TEMPLATES.slice();
 
   /* 面板改过的提示词/模板灌进来。空值 = 用默认。 */
+  // 占位符替换（提示词里可用 {len} {lo} {hi} {cap} {tone} {post}）
+  function fill(tpl, vars) {
+    let out = String(tpl || "");
+    for (const [k, v] of Object.entries(vars)) out = out.split("{" + k + "}").join(String(v));
+    return out;
+  }
+
   function applyCustom(beh) {
     MINE_SYSTEM = (beh && beh.comment_prompt) || DEFAULT_MINE_PROMPT;
     const raw = (beh && beh.comment_templates || "").trim();
@@ -204,27 +266,94 @@ globalThis.COMMENT_GEN = (() => {
   }
 
   let lastMine = -1;
+  /* 生成一条模板评论。
+   * 关键思路调整（修「半导体周期见」「我觉得这个工」这类断词）：
+   *   先按可用空间挑短语很别扭 —— 模板固定字数一多，短语就被挤成半截词。
+   *   改成：短语按「有意义的长度」取（4~10 字，取完整词块），
+   *         再挑一条「短语 + 模板固定字数 ≤ 上限」的模板来装它。 */
   function mineTemplate(post, len) {
     const { cap } = SOP.commentLength({ comment_target_len: len });
-    let tpl = MINE_TEMPLATES[0] || "";
-    if (MINE_TEMPLATES.length > 1) {
-      const choices = MINE_TEMPLATES.map((_, i) => i).filter((i) => i !== lastMine);
-      lastMine = choices[Math.floor(Math.random() * choices.length)];
-      tpl = MINE_TEMPLATES[lastMine];
+    const order = MINE_TEMPLATES.map((_, i) => i).sort(() => Math.random() - 0.5);
+
+    // 短语目标：整句落 ~len，所以短语大致取 len - 模板固定字数，但不低于 4、不高于 10
+    const tryOne = (tplIdx, phraseLen) => {
+      const tpl = MINE_TEMPLATES[tplIdx];
+      const phrase = shortPhrase(post.text || "", phraseLen);
+      if (!phrase) return null;
+      const text = tpl.replaceAll("{p}", phrase);
+      if (text.length > cap) return null;
+      return text;
+    };
+
+    for (const i of order) {
+      const tpl = MINE_TEMPLATES[i];
+      const fixed = tpl.replace("{p}", "").length;
+      // 先试「刚好凑到目标字数」的短语长度，再放宽到装得下的最大长度
+      const ideal = Math.max(4, Math.min(10, len - fixed));
+      const roomy = Math.max(4, Math.min(12, cap - fixed - 1));
+      for (const pl of [ideal, roomy, Math.max(4, ideal - 2)]) {
+        const t = tryOne(i, pl);
+        if (t) { lastMine = i; return t; }
+      }
     }
-    // 关键：按模板本身的固定字数算「{p} 还能占多少」，否则长模板会撞 20 字上限被丢掉。
-    // 同时向目标字数靠拢：整句控制在 ~len，而不是把剩余空间用满（否则总是顶到上限）。
-    const fixed = tpl.replace("{p}", "").length;
-    const wantPhrase = Math.max(3, Math.min(len - fixed, cap - fixed - 1));
-    const phrase = shortPhrase(post.text || "", wantPhrase) || "这个观点";
-    return tpl.replaceAll("{p}", phrase);
+    return null;
   }
+
+  // 短语取不到时用的纯观点短句（不依赖原帖，但至少是通顺的一句话）
+  const NO_PHRASE_TEMPLATES = [
+    "这条我持保留，得看后续。",
+    "方向没错，落地最难。",
+    "有同感，短期热闹长期未必。",
+    "挺真实的，代价也不小。",
+    "我更看长期，不急着下结论。",
+    "这判断我认同，但风险也要说。",
+  ];
 
   // 占位符替换（提示词里可用 {len} {lo} {hi} {cap} {tone} {post}）
   function fill(tpl, vars) {
-    let out = tpl;
+    let out = String(tpl || "");
     for (const [k, v] of Object.entries(vars)) out = out.split("{" + k + "}").join(String(v));
     return out;
+  }
+
+  /* ---------- 防重复评论（用户反复踩的坑）----------
+   * 三层：
+   *   1) 同一个帖子 ID 只评一次（content.js 的 replied 表，最硬）
+   *   2) 同一个作者：最近给他评论过的句子不许再说（myReplies 传进来）
+   *   3) 全局：和我最近发过的 N 条不相似（字符二元组相似度）
+   * 这里实现 2、3 的判定。 */
+  let HISTORY = [];          // 最近发过的评论（全局）
+
+  function setHistory(arr) { HISTORY = (arr || []).slice(-100); }
+  function pushHistory(t) { if (t) { HISTORY.push(t); HISTORY = HISTORY.slice(-100); } }
+
+  // 字符二元组（bigram）相似度，对中文比编辑距离稳，短句也适用
+  function bigrams(s) {
+    const t = String(s || "").replace(/[\s，。！？、,.!?~—「」""'']/g, "");
+    const out = new Set();
+    for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2));
+    return out;
+  }
+  function sim(a, b) {
+    const A = bigrams(a), B = bigrams(b);
+    if (!A.size || !B.size) return 0;
+    let hit = 0;
+    for (const g of A) if (B.has(g)) hit++;
+    return hit / Math.min(A.size, B.size);
+  }
+
+  const DUP_THRESHOLD = 0.6;   // 相似度超过这个就算重复
+
+  function isDuplicate(text, post, beh) {
+    const cand = [
+      ...((post && post.myReplies) || []),   // 同作者的历史
+      ...HISTORY,                            // 全局历史
+    ];
+    for (const old of cand) {
+      if (!old || old === text) return true;
+      if (sim(text, old) >= DUP_THRESHOLD) return true;
+    }
+    return false;
   }
 
   /* ---------- 生成入口 ---------- */
@@ -294,20 +423,37 @@ globalThis.COMMENT_GEN = (() => {
       const toneCn = { friendly: "随和", professional: "专业", humorous: "幽默",
                        curious: "好奇", supportive: "共情", sharp: "直接" }[beh?.tone] || "随和";
       const system = fill(MINE_SYSTEM, { len, lo, hi, cap, tone: toneCn, post: body.slice(0, 800) });
+
+      // 已有回复：既包括页面上别人写的，也包括我自己之前发过的（防重复的关键）
+      const others = (post.replies || []).map((r) => String(r).trim()).filter(Boolean).slice(0, 8);
+      const mineBefore = (post.myReplies || []).map((r) => String(r).trim()).filter(Boolean).slice(0, 5);
+
+      const parts = [];
+      parts.push(`作者：@${post.handle || post.author || "unknown"}`);
+      parts.push(`主内容：\n${body.slice(0, 800)}`);
+      if (others.length) parts.push(`已有回复（供参考，不要重复别人说过的）：\n- ${others.join("\n- ")}`);
+      if (mineBefore.length)
+        parts.push(`我之前在这位作者下发过的评论（绝对不要再说一遍，换个角度）：\n- ${mineBefore.join("\n- ")}`);
+      parts.push(`请给出 1 条评论，${lo}~${hi} 个字（不超过 ${cap} 字），语气${toneCn}。`);
+
       let feedback = "";
-      for (const attempt of [1, 2]) {
+      for (const attempt of [1, 2, 3]) {
         let raw = "";
         try {
           raw = await chrome.runtime.sendMessage({
-            t: "llm", system,
-            user: `【帖子作者】${post.author || ""}\n【帖子正文】\n${body.slice(0, 800)}\n\n` +
-                  `【要求】${lo}~${hi} 个字（不超过 ${cap} 字），先回应帖子内容再表达观点，语气${toneCn}。${feedback}`,
-            cfg: llmCfg,
+            t: "llm", system, user: parts.join("\n\n") + feedback, cfg: llmCfg,
           });
         } catch (e) { raw = ""; }
         if (!raw || raw.__error) break;
         const t = tryAccept(raw);
-        if (t) return { text: t, source: "llm", model: llmCfg.model, len: t.length, target: len, attempts: attempt };
+        if (t) {
+          // 与我历史发过的评论重复 → 换角度重写
+          if (isDuplicate(t, post, beh)) {
+            feedback = `\n\n【这一版和我以前发过的太像了】请换一个完全不同的角度重写。`;
+            continue;
+          }
+          return { text: t, source: "llm", model: llmCfg.model, len: t.length, target: len, attempts: attempt };
+        }
         feedback = `\n\n【上一版不合格】字数或内容不符合要求（要求 ${lo}~${hi} 字，不超过 ${cap} 字），请重写一句。`;
       }
       const t = tryTemplates(post, len, beh);
@@ -320,19 +466,30 @@ globalThis.COMMENT_GEN = (() => {
              ...(t ? { note: "未配置密钥，短句模板兜底" } : { error: "模板都超出字数上限，去「评论规则」窗口改短一点" }) };
   }
 
-  /* 模板兜底：随机顺序试模板，`{p}` 按每条模板的剩余空间截断，
-   * 某条实在放不下（模板本身太长）就换下一条，而不是整个失败。 */
-  function tryTemplates(post, len, beh, tries = 10) {
+  /* 模板兜底：试多条模板，`{p}` 按每条模板的剩余空间截断，
+   * 某条放不下（模板本身太长）或与历史重复就换下一条。
+   * 全部都取不到短语时，退回「不带短语的纯观点短句」——宁可少一点针对性，
+   * 也不要发出一句机器拼出来的怪话。 */
+  function tryTemplates(post, len, beh, tries = 12) {
     const n = Math.max(1, MINE_TEMPLATES.length);
     for (let i = 0; i < Math.min(tries, n); i++) {
       const t = mineTemplate(post, len);
       if (!t) continue;
       const [ok] = SOP.validateComment(t, post, beh);
-      if (ok) return t;
+      if (!ok) continue;
+      if (isDuplicate(t, post, beh)) continue;   // 和发过的太像 → 换一条
+      return t;
     }
+    // 没有可用短语 → 纯观点兜底
+    const pool = NO_PHRASE_TEMPLATES.filter((t) => {
+      const [ok] = SOP.validateComment(t, post, beh);
+      return ok && !isDuplicate(t, post, beh);
+    });
+    if (pool.length) return pool[Math.floor(Math.random() * pool.length)];
     return "";
   }
 
   return { generate, classifyScene, generateMine, applyCustom, tryTemplates,
+           isDuplicate, setHistory, pushHistory, sim,
            DEFAULT_MINE_PROMPT, DEFAULT_MINE_TEMPLATES };
 })();
