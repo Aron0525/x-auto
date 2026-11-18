@@ -3,7 +3,7 @@
   "name": "X Auto SOP",
   "version": "0.1.0",
   "description": "按《X 新人浏览互动 SOP》自动刷推：先读后动、独立判断、拟人键鼠（CDP 可信事件）、逐字 130ms 输入",
-  "permissions": ["debugger", "storage", "tabs", "sidePanel", "alarms"],
+  "permissions": ["debugger", "storage", "tabs", "scripting", "sidePanel", "alarms"],
   "host_permissions": ["https://x.com/*", "https://api.deepseek.com/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

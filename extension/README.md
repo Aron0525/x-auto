@@ -18,13 +18,29 @@ Python 版的「同门」：同一套 SOP 判定与评论生成逻辑移植成 M
 
 ```
 extension/
-  manifest.json    MV3：debugger/storage/tabs/sidePanel/alarms
+  manifest.json    MV3：debugger/storage/tabs/scripting/sidePanel/alarms
   sop.js           SOP 判定层（跳过/质量分/展开/赞/评/校验/关注/通知）
   comment.js       评论生成（LLM 经 background 代发；无密钥走模板兜底）
   content.js       页面操作 + 会话状态机（home→detail→profile→notif）
   background.js    CDP 拟人输入（贝塞尔分步移动/逐字 130ms/滚轮 120 单位）+ LLM 代发 + 轮次 alarm
-  panel.html/js    侧边栏：开始/停止/循环、行为参数、额度、活动日志、导出
+  dashboard.html/js 使用窗口（点工具栏图标打开）：控制面板/帖子留档/活动日志/使用说明 四页签，
+                   今日额度进度条、会话统计、留档筛选表格、修复页面注入、导出记录
+  panel.html/js    侧边栏（轻量入口：开始/停止/循环/参数 + 跳控制台）
 ```
+
+## 使用窗口（dashboard）
+
+点浏览器工具栏的扩展图标 → 弹出独立控制台窗口（1180×860）：
+
+- **控制面板**：开始/停止/循环；行为参数（会话分钟、打字 ms、四个概率、关注上限、语气/长度档、
+  是否处理通知）；LLM Key 与每日上限；今日额度进度条（到上限变红）；当前会话统计（读/展开/赞/评/藏/关注/滑过）
+- **帖子留档**：表格浏览全部留档记录（时间/作者可点回原帖/内容/动作徽章），支持关键词筛选
+- **活动日志**：滚动实时日志（content 的 logAct 全走这里）
+- **使用说明**：30 秒上手 + SOP 规则摘要 + 故障处理速查
+- 维护按钮：**修复页面注入**（`chrome.scripting.executeScript` 重放 sop/comment/content 三件套，
+  解决「标签页比插件先开」或「刚重载过扩展」导致 content 不在的情况）、导出全部记录 JSON
+
+侧边栏（panel）保留作轻量入口，里面「控制台」按钮也能打开这个窗口。
 
 ## 安装（Edge，和现有调试浏览器互不干扰）
 

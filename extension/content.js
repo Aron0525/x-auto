@@ -242,11 +242,22 @@
     return d.xa_state || { replied: {}, liked: {}, followed: {}, events: [], records: [], activity: [] };
   }
   async function storeSet(s) { await chrome.storage.local.set({ xa_state: s }); }
+  // 读-改-写必须串行：否则 logAct 与 recordTweet 交错会互相覆盖丢数据
+  let _storeLock = Promise.resolve();
+  function withStore(fn) {
+    const run = _storeLock.then(async () => {
+      const s = await storeGet();
+      await fn(s);
+      await storeSet(s);
+    });
+    _storeLock = run.catch(() => {});
+    return run;
+  }
   async function logAct(msg) {
-    const s = await storeGet();
-    s.activity.push({ at: new Date().toLocaleTimeString(), msg });
-    s.activity = s.activity.slice(-300);
-    await storeSet(s);
+    await withStore((s) => {
+      s.activity.push({ at: new Date().toLocaleTimeString(), msg });
+      s.activity = s.activity.slice(-300);
+    });
     send({ t: "ui-ping" }).catch(() => {});
   }
   async function countToday(kind) {
@@ -255,26 +266,31 @@
     return s.events.filter((e) => e.kind === kind && (e.at || "").startsWith(today)).length;
   }
   async function addEvent(kind) {
-    const s = await storeGet();
-    s.events.push({ kind, at: new Date().toISOString() });
-    s.events = s.events.slice(-3000);
-    await storeSet(s);
+    await withStore((s) => {
+      s.events.push({ kind, at: new Date().toISOString() });
+      s.events = s.events.slice(-3000);
+    });
   }
   async function budgetLeft(kind, cap) { return Math.max(0, cap - (await countToday(kind))); }
 
   async function recordTweet(tw, actions) {
-    const s = await storeGet();
-    s.records.push({ at: new Date().toLocaleString(), id: tw.id, href: tw.href,
-                     handle: tw.handle, author: tw.author, text: (tw.text || "").slice(0, 400), actions });
-    s.records = s.records.slice(-2000);
-    await storeSet(s);
+    await withStore((s) => {
+      s.records.push({ at: new Date().toLocaleString(), id: tw.id, href: tw.href,
+                       handle: tw.handle, author: tw.author, text: (tw.text || "").slice(0, 400), actions });
+      s.records = s.records.slice(-2000);
+    });
   }
 
   // ---------------- 会话状态机 ----------------
 
   const CTX_KEY = "xa_ctx";
   const loadCtx = () => { try { return JSON.parse(sessionStorage.getItem(CTX_KEY)); } catch { return null; } };
-  const saveCtx = (c) => c && c.run ? sessionStorage.setItem(CTX_KEY, JSON.stringify(c)) : sessionStorage.removeItem(CTX_KEY);
+  function saveCtx(c) {
+    if (!c || !c.run) { sessionStorage.removeItem(CTX_KEY); return; }
+    sessionStorage.setItem(CTX_KEY, JSON.stringify(c));
+    // 镜像统计到 storage，控制台窗口能读到
+    withStore((s) => { s.stats = c.stats; s.phase = c.phase; }).catch(() => {});
+  }
 
   let ctx = null;
   let busy = false;
@@ -345,7 +361,7 @@
         const btn = art && art.querySelector(SEL.like);
         if (btn && await clickEl(btn, { settle: [600, 1200] })) {
           ctx.stats.liked++; await addEvent("like");
-          const s = await storeGet(); s.liked[tw.id] = { at: new Date().toISOString() }; await storeSet(s);
+          await withStore((s) => { s.liked[tw.id] = { at: new Date().toISOString() }; });
           await logAct(`赞（时间线）@${tw.handle}`);
         }
       }
@@ -381,7 +397,7 @@
       const btn = q(SEL.like) || q(SEL.liked);
       if (btn === q(SEL.like) && await clickEl(btn, { settle: [600, 1200] })) {
         ctx.stats.liked++; await addEvent("like");
-        const s = await storeGet(); s.liked[tw.id] = { at: new Date().toISOString() }; await storeSet(s);
+        await withStore((s) => { s.liked[tw.id] = { at: new Date().toISOString() }; });
         await logAct(`赞 @${post.handle}`);
       }
     }
@@ -396,9 +412,9 @@
         const r = await replyCurrent(text, beh);
         if (r.ok) {
           ctx.stats.commented++; await addEvent("reply");
-          const s = await storeGet();
-          s.replied[tw.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
-          await storeSet(s);
+          await withStore((s) => {
+            s.replied[tw.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
+          });
           acts.comment = text.slice(0, 120);
           await logAct(`✓ 评论 @${post.handle}：${text.slice(0, 40)}`);
           await sleep(rnd(30000, 90000));   // 写操作间隔：真人不会连发
@@ -445,13 +461,13 @@
     const [ok, reason] = SOP.shouldFollow({ bio }, recent, "浏览时质量分已达标");
     const state = followState();
     if (state === "following") {
-      const s = await storeGet(); s.followed[handle] = { at: new Date().toISOString(), state: "already" };
-      await storeSet(s);
+      await withStore((s) => { s.followed[handle] = { at: new Date().toISOString(), state: "already" }; });
     } else if (ok && state === "follow" && (await budgetLeft("follow", beh.limits.follow)) > 0) {
       if (await clickSel(SEL.follow, { settle: [900, 1600] }) && followState() === "following") {
         ctx.stats.followed++; await addEvent("follow");
-        const s = await storeGet(); s.followed[handle] = { at: new Date().toISOString(), reason: reason.slice(0, 60) };
-        await storeSet(s);
+        await withStore((s) => {
+          s.followed[handle] = { at: new Date().toISOString(), reason: reason.slice(0, 60) };
+        });
         await logAct(`✓ 关注 @${handle}（${reason.slice(0, 40)}）`);
       } else {
         await logAct(`✗ @${handle} 关注未生效`);
@@ -481,9 +497,10 @@
       ctx.phase = "home"; ctx.feed = "following"; ctx.tabDone = false;
       await goHome(); saveCtx(ctx); return;
     }
-    if (Date.now() > ctx.deadline * 0 + (ctx.started + (ctx.deadline - ctx.started) * 0.2)) {
+    if (Date.now() > ctx.started + (ctx.deadline - ctx.started) * 0.2) {
       // 通知只占前 20% 时间（SOP 11）
-      ctx.phase = "home"; await goHome(); saveCtx(ctx); return;
+      ctx.phase = "home"; ctx.feed = "following"; ctx.tabDone = false;
+      await goHome(); saveCtx(ctx); return;
     }
     const it = ctx.notifTodo.shift();
     const cell = [...document.querySelectorAll(SEL.cell)]
@@ -511,9 +528,9 @@
         const r = await replyCurrent(text, beh);
         if (r.ok) {
           ctx.stats.commented++; await addEvent("reply");
-          const s = await storeGet();
-          s.replied[ctx.current.id] = { at: new Date().toISOString(), text: text.slice(0, 120), via: "notification" };
-          await storeSet(s);
+          await withStore((s) => {
+            s.replied[ctx.current.id] = { at: new Date().toISOString(), text: text.slice(0, 120), via: "notification" };
+          });
           await recordTweet(post, { comment: text.slice(0, 120), via: "notification" });
           await logAct(`✓ 回复 @${post.handle || ctx.current.handle}：${text.slice(0, 40)}`);
         } else {

@@ -8,7 +8,7 @@
  * 硬规则：一句话；必须接住原帖的具体点；不空话、不编造亲历、不互动交换。
  */
 
-const COMMENT_GEN = (() => {
+globalThis.COMMENT_GEN = (() => {
   const TONE_HINT = {
     friendly: "语气随和，像朋友随口接一句，可以带一点口语。",
     professional: "语气专业克制：讲事实、给判断或补充信息，不寒暄、不调侃。",

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>X Auto SOP 控制台</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+         margin: 0; background: #0f1419; color: #e7e9ea; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+           background: #15202a; border-bottom: 1px solid #2f3336; position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0; }
+  #status { font-size: 12px; color: #71767b; }
+  .pill { border-radius: 10px; padding: 2px 10px; font-size: 12px; }
+  .on  { background: #00ba7c33; color: #00ba7c; }
+  .off { background: #71767b33; color: #aab8c2; }
+  .warn{ background: #ffd40033; color: #ffd400; }
+  .bad { background: #f9158b33; color: #f9158b; }
+  button { background: #1d9bf0; color: #fff; border: 0; border-radius: 18px;
+           padding: 7px 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  button:hover { filter: brightness(1.1); }
+  button.stop { background: #f9158b; }
+  button.ghost { background: #2f3336; }
+  button:disabled { opacity: .45; cursor: default; }
+  nav { display: flex; gap: 4px; padding: 0 20px; background: #15202a;
+        border-bottom: 1px solid #2f3336; }
+  nav button { background: none; color: #71767b; border-radius: 0; font-weight: 500;
+               padding: 10px 14px; border-bottom: 2px solid transparent; }
+  nav button.cur { color: #1d9bf0; border-bottom-color: #1d9bf0; }
+  main { padding: 16px 20px; max-width: 1100px; }
+  section { display: none; } section.cur { display: block; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #15202a; border: 1px solid #2f3336; border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: #e7e9ea; }
+  .row { display: flex; gap: 10px; margin: 7px 0; align-items: center; }
+  .row label { width: 110px; color: #71767b; flex: none; }
+  input[type=number], input[type=text], select { flex: 1; background: #0f1419; color: #e7e9ea;
+    border: 1px solid #38444d; border-radius: 6px; padding: 5px 9px; min-width: 0; }
+  input[type=checkbox] { accent-color: #1d9bf0; }
+  .statbar { display: flex; flex-wrap: wrap; gap: 8px; }
+  .stat { background: #1e2732; border-radius: 10px; padding: 8px 14px; min-width: 110px; }
+  .stat b { font-size: 18px; display: block; }
+  .stat span { font-size: 11px; color: #71767b; }
+  .bar { height: 4px; background: #2f3336; border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: #1d9bf0; }
+  #log { background: #0d141a; border-radius: 8px; padding: 10px; height: 420px;
+         overflow-y: auto; font: 12px/1.7 Consolas, "Courier New", monospace; white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: #71767b; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid #2f3336; position: sticky; top: 0; background: #15202a; }
+  td { padding: 7px 8px; border-bottom: 1px solid #1e2732; vertical-align: top; }
+  tr:hover td { background: #18242e; }
+  .badge { display: inline-block; border-radius: 4px; padding: 0 6px; margin-right: 3px; font-size: 11px; }
+  .b-like { background: #f9158b33; color: #f9158b; }
+  .b-cmt  { background: #1d9bf033; color: #1d9bf0; }
+  .b-bm   { background: #00ba7c33; color: #00ba7c; }
+  .b-fl   { background: #ffd40033; color: #ffd400; }
+  .b-skip { background: #71767b33; color: #aab8c2; }
+  .txt { max-width: 480px; color: #8899a6; }
+  .lnk { color: #1d9bf0; cursor: pointer; text-decoration: none; }
+  #recWrap { max-height: 520px; overflow-y: auto; border: 1px solid #2f3336; border-radius: 8px; }
+  .help h3 { font-size: 14px; margin: 14px 0 6px; color: #1d9bf0; }
+  .help p, .help li { color: #8899a6; }
+  .help code { background: #0d141a; border-radius: 4px; padding: 1px 6px; font-size: 12px; color: #e7e9ea; }
+  .help ul { padding-left: 20px; }
+  .kbd { border: 1px solid #38444d; border-radius: 4px; padding: 0 5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🍵 X Auto SOP 控制台</h1>
+  <span id="status">初始化…</span>
+  <span id="roundInfo"></span>
+  <div style="flex:1"></div>
+  <button id="start">▶ 开始一轮会话</button>
+  <button id="stop" class="stop" disabled>■ 停止</button>
+  <button id="rounds" class="ghost">循环：关</button>
+  <button id="openX" class="ghost">打开 x.com</button>
+</header>
+
+<nav>
+  <button data-tab="ctrl" class="cur">控制面板</button>
+  <button data-tab="rec">帖子留档</button>
+  <button data-tab="log">活动日志</button>
+  <button data-tab="help">使用说明</button>
+</nav>
+
+<main>
+  <!-- 控制面板 -->
+  <section id="sec-ctrl" class="cur">
+    <div class="card">
+      <h2>今日额度</h2>
+      <div class="statbar" id="quota"></div>
+    </div>
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h2>行为参数（SOP）</h2>
+          <div class="row"><label>会话分钟</label><input type="number" id="session_minutes" min="5" max="60"></div>
+          <div class="row"><label>打字 ms/字</label><input type="number" id="typing_ms" min="50" max="500"></div>
+          <div class="row"><label>展开概率</label><input type="number" id="expand_prob" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>点赞概率</label><input type="number" id="like_prob" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>评论概率</label><input type="number" id="comment_prob" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>收藏概率</label><input type="number" id="bookmark_prob" min="0" max="1" step="0.05"></div>
+          <div class="row"><label>每轮关注≤</label><input type="number" id="follow_per_session" min="0" max="5"></div>
+          <div class="row"><label>语气</label>
+            <select id="tone">
+              <option value="friendly">随和</option><option value="professional">专业</option>
+              <option value="humorous">幽默</option><option value="curious">好奇</option>
+              <option value="supportive">共情</option><option value="sharp">直接</option>
+            </select></div>
+          <div class="row"><label>长度档</label>
+            <select id="style">
+              <option value="short">短（10~25字）</option><option value="normal">正常（20~60字）</option><option value="detailed">详细（60~120字）</option>
+            </select></div>
+          <div class="row"><label>处理通知</label><input type="checkbox" id="notif_enabled">
+            <span style="color:#71767b">开会话先花 20% 时间回通知</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h2>LLM 与每日上限</h2>
+          <div class="row"><label>API Key</label><input type="text" id="llm_key" placeholder="留空 = 模板兜底"></div>
+          <div class="row"><label>Base URL</label><input type="text" id="llm_base"></div>
+          <div class="row"><label>模型</label><input type="text" id="llm_model"></div>
+          <div class="row"><label>日赞上限</label><input type="number" id="max_like" min="0" max="200"></div>
+          <div class="row"><label>日评上限</label><input type="number" id="max_reply" min="0" max="100"></div>
+          <div class="row"><label>日关注上限</label><input type="number" id="max_follow" min="0" max="50"></div>
+        </div>
+        <div class="card">
+          <h2>会话统计（当前 / 最近一轮）</h2>
+          <div class="statbar" id="sessStats"></div>
+        </div>
+        <div class="card">
+          <h2>维护</h2>
+          <div class="row">
+            <button id="save" class="ghost">保存设置</button>
+            <button id="reinject" class="ghost">修复页面注入</button>
+            <button id="export" class="ghost">导出全部记录</button>
+          </div>
+          <p style="color:#71767b;margin:8px 0 0">「修复页面注入」：x.com 标签页比插件先打开、或刚重载过扩展时用；注入后无需刷新页面。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 帖子留档 -->
+  <section id="sec-rec">
+    <div class="row" style="margin-bottom:10px">
+      <input type="text" id="recFilter" placeholder="筛选：作者 / 关键词…">
+      <span id="recCount" style="color:#71767b"></span>
+    </div>
+    <div id="recWrap">
+      <table>
+        <thead><tr><th style="width:120px">时间</th><th style="width:130px">作者</th><th>帖子内容</th><th style="width:170px">动作</th></tr></thead>
+        <tbody id="recBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 活动日志 -->
+  <section id="sec-log">
+    <div class="row" style="margin-bottom:10px">
+      <button id="clearLog" class="ghost" style="margin-left:auto">清空显示</button>
+    </div>
+    <div id="log">（还没有活动）</div>
+  </section>
+
+  <!-- 使用说明 -->
+  <section id="sec-help" class="help">
+    <div class="card">
+      <h2>30 秒上手</h2>
+      <ol>
+        <li>在另一个标签页打开 <code>x.com</code> 并登录（可以放后台，<b>不用前台</b>，别关它）。</li>
+        <li>想单跑一轮：点 <span class="kbd">▶ 开始一轮会话</span>；想挂机：点 <span class="kbd">循环</span>（每 30 分钟自动开一轮 30 分钟会话）。</li>
+        <li>填 LLM Key（DeepSeek）出真评论；不填就模板兜底，一样过 SOP 校验。</li>
+        <li>跑的过程看「活动日志」，跑完看「帖子留档」，要备份点「导出全部记录」。</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h2>它按什么规则动（SOP 摘要）</h2>
+      <ul>
+        <li><b>先读后动</b>：每条帖子先扫读，跳过互关/抽奖/钱包/骂战等；值得的点开，<b>向上滑看上下文</b>再决定。</li>
+        <li><b>独立判断</b>：阅读、赞、评论、收藏、关注各自掷骰子，不是「见人就三连」。</li>
+        <li><b>评论必须接住具体点</b>：与原帖有非通用词重叠，空话（「学到了」「干货」）、编造亲历（「我刚测过」）、互动交换一律拦截，不合格宁可不发。</li>
+        <li><b>关注要查主页</b>：点进主页读简介 + 近 5 条，质量够才关注，说不出理由就不关。</li>
+        <li><b>不可用帖子直接跳过</b>；<b>草稿永不保存</b>；导航只点界面元素，<b>从不拼 URL</b>。</li>
+        <li><b>逐字输入 130ms/字符</b>（中文同等待遇，不走粘贴）；鼠标走贝塞尔轨迹带抖动。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>额度与节奏</h2>
+      <ul>
+        <li>每日上限（赞/评/关注）到数自动停手，<b>别绕过</b>；面板「今日额度」实时显示。</li>
+        <li>一轮会话到点自动收；循环模式下下一轮 = 上一轮结束后约 30 分钟。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>出问题了怎么办</h2>
+      <ul>
+        <li><b>状态显示「没找到 x.com 标签页」</b>：去开一个并登录。</li>
+        <li><b>点开始没反应 / 日志不动</b>：标签页比插件先开或刚重载过扩展 → 点「修复页面注入」。</li>
+        <li><b>评论一直「没有合格文案」</b>：是 SOP 校验在拦不合格句子，<b>设计如此</b>，别去改校验阈值。</li>
+        <li><b>「两次提交都没有成功证据」</b>：看 x.com 页面实际是否已发出（Ctrl+Enter 兜底已内置）；若确实没发出，多半是帖子受限或网络抖动，跳过即可。</li>
+        <li><b>浏览器顶部「正在调试此浏览器」横幅</b>：chrome.debugger 的正常表现，X 看不到它，不用管。</li>
+        <li>同一时刻<b>只跑一个驱动</b>：Python 版和插件版别同时操作同一个 x.com 标签页。</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<script src="dashboard.js"></script>
+</body>
+</html>

@@ -190,6 +190,10 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
     } else if (m.t === "rounds") {
       await scheduleRounds(!!m.on);
       reply({ ok: true, on: !!m.on });
+    } else if (m.t === "open-dashboard") {
+      await chrome.windows.create({ url: chrome.runtime.getURL("dashboard.html"),
+                                   type: "popup", width: 1180, height: 860 });
+      reply({ ok: true });
     } else if (m.t === "rounds-status") {
       const st = await chrome.storage.local.get(["xa_rounds"]);
       reply(st.xa_rounds || { done: 0 });
@@ -205,6 +209,12 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
 });
 
 chrome.action.onClicked.addListener(async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab) chrome.sidePanel.open({ windowId: tab.windowId });
+  // 点图标 = 打开控制台窗口（已开则聚焦，不重复开）
+  const wins = await chrome.windows.getAll({ populate: true });
+  for (const w of wins) {
+    const d = (w.tabs || []).find((t) => (t.url || "").includes("dashboard.html"));
+    if (d) { await chrome.windows.update(w.id, { focused: true }); await chrome.tabs.update(d.id, { active: true }); return; }
+  }
+  await chrome.windows.create({ url: chrome.runtime.getURL("dashboard.html"),
+                               type: "popup", width: 1180, height: 860 });
 });

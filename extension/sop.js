@@ -9,7 +9,9 @@
  * 这里只放「判断」，不碰 DOM。content.js 负责采集和动作。
  */
 
-const SOP = (() => {
+/* 用 globalThis 赋值而不是 const：同一页面被重复注入（dashboard 的
+ * 「修复页面注入」）时 const 会撞重声明 SyntaxError，赋值则幂等覆盖。 */
+globalThis.SOP = (() => {
   const SKIP_PATTERNS = [
     "互关", "互粉", "回关", "求关注", "关注我", "点个赞", "点赞回",
     "抽奖", "关注抽", "转发抽", "评论区留言", "评论区扣", "扣1", "滴滴我",

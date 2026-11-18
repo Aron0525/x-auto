@@ -114,6 +114,7 @@ async function exportRecords() {
 
 $("start").onclick = async () => { const r = await sendCmd("start"); flash(r ? "会话已启动" : "启动失败：页面没就绪"); };
 $("stop").onclick = async () => { await sendCmd("stop"); flash("已停止"); };
+$("dash").onclick = () => chrome.runtime.sendMessage({ t: "open-dashboard" });
 $("save").onclick = saveSettings;
 $("rounds").onclick = toggleRounds;
 $("export").onclick = exportRecords;
