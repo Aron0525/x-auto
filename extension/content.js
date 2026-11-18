@@ -38,6 +38,7 @@
     navNotif: '[data-testid="AppTabBar_Notifications_Link"]',
     tab: '[role="tab"]',
     appClose: '[data-testid="app-bar-close"]',
+    userCell: '[data-testid="UserCell"]',   // 详情页右侧 Relevant People 的作者行
   };
 
   const DISCARD_TEXTS = ["不保存", "放弃", "丢弃", "Discard", "Don't save"];
@@ -353,8 +354,42 @@
     return [true, ""];
   }
 
-  const followState = () =>
-    q(SEL.unfollow) ? "following" : q(SEL.follow) ? "follow" : "none";
+  /* 关注按钮的状态：必须限定在主栏里查。
+   * 全局查会把右侧「Who to follow」别人的 Follow 按钮当成作者的按钮（会关错人）。 */
+  function followStateIn(root) {
+    const scope = root || q('[data-testid="primaryColumn"]') || document;
+    const u = scope.querySelector(SEL.unfollow);
+    if (u) return { state: "following", btn: u };
+    const f = scope.querySelector(SEL.follow);
+    if (f) return { state: "follow", btn: f };
+    return { state: "none", btn: null };
+  }
+  const followState = () => followStateIn().state;
+
+  /* 详情页右侧 Relevant People / Who to follow 里的作者行：
+   * 用户实测——帖子详情页右边会显示发帖人，没关注是 Follow，已关注是 Following。
+   * 所以判断关注状态不必点进主页，直接读侧栏那一行就够。
+   * 返回 "follow" | "following" | ""（侧栏没有这个人）。 */
+  function sidebarFollowState(handle) {
+    const want = (handle || "").toLowerCase();
+    if (!want) return "";
+    const cells = [...document.querySelectorAll(SEL.userCell)];
+    for (const c of cells) {
+      const links = [...c.querySelectorAll('a[href^="/"]')]
+        .map((a) => (a.getAttribute("href") || "").replace(/^\//, "").split("/")[0].toLowerCase())
+        .filter(Boolean);
+      if (!links.includes(want)) continue;
+      if (c.querySelector(SEL.unfollow)) return "following";
+      if (c.querySelector(SEL.follow)) return "follow";
+      // 有的版本按钮在 cell 外一层的卡片里，向上再找一层
+      const box = c.closest('[data-testid="cellInnerDiv"]') || c.parentElement;
+      if (box) {
+        if (box.querySelector(SEL.unfollow)) return "following";
+        if (box.querySelector(SEL.follow)) return "follow";
+      }
+    }
+    return "";
+  }
 
   // ---------------- 提交与证据 ----------------
 
@@ -462,7 +497,7 @@
       typing_ms: s.typing_ms ?? 130, session_minutes: s.session_minutes ?? 30,
       like_prob: s.like_prob ?? 0.85, comment_prob: s.comment_prob ?? 0.8,
       expand_prob: s.expand_prob ?? 0.9, bookmark_prob: s.bookmark_prob ?? 0.3,
-      follow_per_session: s.follow_per_session ?? 3,
+      follow_per_session: s.follow_per_session ?? 5,
       speed: s.speed ?? 1.5, feed: s.feed || "for_you",
       tone: s.tone || "friendly", style: s.style || "normal",
       limits: { like: s.max_like ?? 60, reply: s.max_reply ?? 20, follow: s.max_follow ?? 25 },
@@ -653,17 +688,27 @@
       }
     }
 
-    // 关注：点开的帖子作者若未关注 → 进主页看一眼再决定（SOP：不盲关）
+    // 关注：详情页右侧 Relevant People 就能看出有没有关注，不必为「查看」而进主页。
+    // 未关注 → 进主页随便看几篇、点赞/评论互动一下，再直接关注（不判断方向）。
     const cap = beh.follow_per_session;
     if ((ctx.stats.followed || 0) < cap && (await budgetLeft("follow", beh.limits.follow)) > 0) {
-      const s = await storeGet();
       const handle = post.handle || "";
-      if (handle && !s.followed[handle]) {
-        const link = q(SEL.userNameLink);
-        if (link && await clickEl(link, { settle: [1500, 2600] })) {
-          await logAct(`@${handle} 未关注 → 进主页看看再决定`);
-          ctx.pendingActs = acts;
-          ctx.phase = "profile"; saveCtx(ctx); return;
+      const mine = (whoami() || "").toLowerCase();
+      if (handle && handle.toLowerCase() !== mine) {
+        const sb = sidebarFollowState(handle);
+        const known = (await storeGet()).followed[handle];
+        if (sb === "following" || (known && known.state !== "follow")) {
+          if (!known) await withStore((s) => {
+            s.followed[handle] = { at: new Date().toISOString(), state: "already" };
+          });
+          await logAct(`@${handle} 侧栏显示已关注，跳过`);
+        } else {
+          await logAct(`@${handle} ${sb === "follow" ? "侧栏显示未关注" : "侧栏没这个人"} → 进主页看几篇再关注`);
+          const link = q(SEL.userNameLink);
+          if (link && await clickEl(link, { settle: [1500, 2600] })) {
+            ctx.pendingActs = acts;
+            ctx.phase = "profile"; saveCtx(ctx); return;
+          }
         }
       }
     }
@@ -676,33 +721,113 @@
 
   // 会话节奏：评论后停 30~90 秒（每日额度由 limits 控制）
 
+  /* 作者主页：用户策略是「先互动再关注」，且不再判断方向/质量。
+   * 1) 随便看 2~3 篇（滚动 + 停顿，像真人在翻）
+   * 2) 挑 1~2 篇点赞（保护每日额度），能评论就评论一条
+   * 3) 最后直接点关注 —— 用户明确：不需要看方向，涨互动、涨时间线
+   */
   async function stepProfile(beh) {
-    await waitContent(1, 20000, "作者主页");   // 慢网：主页资料卡+时间线是分批渲染的
-    const bio = (q(SEL.bio) || {}).innerText || "";
-    const recent = readTweets(5);
+    await waitContent(1, 20000, "作者主页");
     const handle = ctx.current ? (ctx.current.handle || "") : "";
-    const [ok, reason] = SOP.shouldFollow({ bio }, recent, "浏览时质量分已达标");
-    const state = followState();
-    let followAct = false;
-    if (state === "following") {
-      await withStore((s) => { s.followed[handle] = { at: new Date().toISOString(), state: "already" }; });
-      await logAct(`@${handle} 已关注过（按钮是已关注态），不动`);
-    } else if (ok && state === "follow" && (await budgetLeft("follow", beh.limits.follow)) > 0) {
-      if (await clickSel(SEL.follow, { settle: [900, 1600] }) && followState() === "following") {
-        ctx.stats.followed++; await addEvent("follow");
-        await withStore((s) => {
-          s.followed[handle] = { at: new Date().toISOString(), reason: reason.slice(0, 60) };
-        });
-        followAct = true;
-        await logAct(`✓ 关注 @${handle}（${reason.slice(0, 40)}）`);
-      } else {
-        await logAct(`✗ @${handle} 关注未生效（按钮状态没变）`);
-      }
-    } else if (!ok) {
-      await logAct(`不关注 @${handle}：${reason}`);
+    const mine = (whoami() || "").toLowerCase();
+    if (handle && handle.toLowerCase() === mine) {
+      await logAct("这是自己的主页，返回");
+      ctx.phase = "home"; ctx.tabDone = false; await goHome(); saveCtx(ctx); return;
     }
+
     const acts = ctx.pendingActs || {};
     delete ctx.pendingActs;
+
+    // 主页上先翻一翻：这本身也是「看几篇文章」的动作
+    const readN = ri(2, 3);
+    const recent = readTweets(6).slice(0, readN);
+    for (const t of recent) {
+      await sleep(rnd(1500, 4000) * SPD);
+      await logAct(`主页翻到 @${handle}：${norm(t.text).slice(0, 50) || "（无文字）"}`);
+    }
+    const bestPost = recent.length
+      ? recent.reduce((a, b) => (SOP.qualityScore(b) > SOP.qualityScore(a) ? b : a))
+      : null;
+
+    // 互动：赞 1~2 篇（额度内），有合适内容再评论一条
+    let likedHere = 0;
+    const likeGoal = Math.min(2, recent.length);
+    for (const t of recent) {
+      if (likedHere >= likeGoal) break;
+      if ((await budgetLeft("like", beh.limits.like)) <= 0) break;
+      if (SOP.shouldSkip(t)[0]) continue;
+      const ok = await likeInTimeline(t.id);
+      if (ok === true) {
+        likedHere++;
+        ctx.stats.liked++; await addEvent("like");
+        await withStore((s) => { s.liked[t.id] = { at: new Date().toISOString() }; });
+        await logAct(`✓ 主页互动：赞 @${handle} 的一篇（${norm(t.text).slice(0, 30)}）`);
+        await sleep(rnd(1200, 3000) * SPD);
+      }
+    }
+
+    if (bestPost && (await budgetLeft("reply", beh.limits.reply)) > 0 && SOP.shouldComment(bestPost, beh)[0]) {
+      const gen = await COMMENT_GEN.generate(bestPost, beh, beh.llm);
+      const text = (gen.text || "").trim();
+      if (text) {
+        // 主页上评论要先进帖子详情，评完回主页再关注
+        const art = [...document.querySelectorAll(SEL.article)]
+          .find((a) => (a.querySelector('a[href*="/status/"]') || { getAttribute: () => "" })
+            .getAttribute("href").includes(bestPost.id));
+        const target = art && (art.querySelector(SEL.tweetText) || art);
+        if (target && await clickEl(target, { settle: [1500, 2600] })) {
+          await waitContent(1, 15000, "帖子详情");
+          const r = await replyCurrent(text, beh);
+          if (r.ok) {
+            ctx.stats.commented++; await addEvent("reply");
+            await withStore((s) => {
+              s.replied[bestPost.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
+            });
+            acts.comment = text.slice(0, 120);
+            await logAct(`✓ 主页互动：评论 @${handle}：${text.slice(0, 40)}`);
+            await sleep(rnd(20000, 60000) * SPD);
+          } else {
+            await logAct(`✗ 主页互动评论失败：${r.error}`);
+          }
+          await goBack("作者主页");
+          await waitContent(1, 15000, "作者主页");
+        }
+      }
+    }
+
+    // 关注：不再判断方向/内容质量，直接点（用户策略：先把关注量做起来）
+    let followAct = false;
+    if ((await budgetLeft("follow", beh.limits.follow)) > 0) {
+      const { state: st, btn: followBtn } = followStateIn();
+      if (st === "following") {
+        await withStore((s) => { s.followed[handle] = { at: new Date().toISOString(), state: "already" }; });
+        await logAct(`@${handle} 已经关注过了`);
+      } else if (st === "follow" && followBtn) {
+        if (await clickEl(followBtn, { settle: [900, 1600] })) {
+          let on = false;
+          const end = Date.now() + 8000;
+          while (Date.now() < end) {
+            if (followState() === "following") { on = true; break; }
+            await sleep(600);
+          }
+          if (on) {
+            followAct = true;
+            ctx.stats.followed++; await addEvent("follow");
+            await withStore((s) => {
+              s.followed[handle] = { at: new Date().toISOString(), reason: "主页看过再关注" };
+            });
+            await logAct(`✓ 关注 @${handle}（看完 ${readN} 篇 + 赞 ${likedHere} 后关注）`);
+          } else {
+            await logAct(`✗ @${handle} 关注未生效（按钮没翻转）`);
+          }
+        }
+      } else {
+        await logAct(`@${handle} 主页上没找到关注按钮，跳过`);
+      }
+    } else {
+      await logAct(`关注今日额度已满，暂时不关注 @${handle}`);
+    }
+
     if (followAct) acts.follow = true;
     await recordTweet({ ...(ctx.current || {}), handle }, acts);
     ctx.phase = "home"; ctx.tabDone = false;

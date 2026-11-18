@@ -19,7 +19,7 @@ async function sendCmd(op) {
 
 const DEFAULTS = {
   session_minutes: 30, typing_ms: 130, like_prob: 0.85, comment_prob: 0.8,
-  expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 3,
+  expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 5,
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,

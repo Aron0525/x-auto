@@ -139,7 +139,9 @@ globalThis.SOP = (() => {
       if (rand() <= p) return [true, `互动帖，回复概率 ${(p * 100) | 0}%`];
       return [false, "互动帖但概率外"];
     }
-    if (text.length < 15) return [false, "内容太薄，没有可接的具体点"];
+    // 用户策略（主动多互动）：短帖只有在重点领域才放行，长度门槛从 15 降到 10
+    if (text.length < 10) return [false, "内容太薄，没有可接的具体点"];
+    if (text.length < 15 && !focusHit(text)) return [false, "内容偏短，非重点领域不评"];
     if (qualityScore(tw) < 1.2 && !focusHit(text)) return [false, "看不出具体点（都是泛泛而谈）"];
     let p = beh.comment_prob ?? 0.2;
     if (focusHit(text)) p = Math.min(0.9, p + 0.15);   // 重点领域多评
