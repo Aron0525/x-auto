@@ -222,14 +222,8 @@
   async function refreshOrTop(reason) {
     const before = timelineSig();
 
-    // 1) 「Show N posts」/「新帖」按钮。按可见文案找，选择器会随 X 改版变。
-    const pill = [...document.querySelectorAll("button, div[role='button']")].find((el) => {
-      const t = (el.innerText || "").trim();
-      if (!t || t.length > 40) return false;
-      if (!/Show\s+\d+\s+posts?|显示\s*\d+\s*条|\d+\s*posts?|新帖子|新帖子?显示|new\s+posts?/i.test(t)) return false;
-      const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;      // 必须是可见的
-    });
+    // 1) 「Show N posts」/「新帖」按钮（按可见文案找，选择器会随 X 改版变）
+    const pill = findNewPostsPill();
     if (pill) {
       const label = (pill.innerText || "").trim().slice(0, 24);
       if (await clickEl(pill, { settle: [1500, 2600] })) {
@@ -596,6 +590,27 @@
   let ctx = null;
   let busy = false;
 
+  /* 【用户要求 4】会话统计实时更新：
+   * 以前只在阶段切换时 saveCtx，一轮里读十几篇期间控制台数字是冻住的。
+   * 现在加一个 1.5 秒的轻量同步，只写 stats/phase/now（不碰其它字段）。 */
+  let statsTimer = null;
+  function startStatsSync() {
+    stopStatsSync();                  // 先清掉可能存在的旧定时器，避免重复创建
+    statsTimer = setInterval(() => {
+      if (!ctx || !ctx.run) return;
+      const cur = ctx.current ? {
+        handle: ctx.current.handle || "", phase: ctx.phase,
+        text: norm(ctx.current.text).slice(0, 120),
+        cat: SOP.focusHit(ctx.current.text || ""),
+      } : { phase: ctx.phase };
+      const snapshot = { ...ctx.stats };   // 快照，避免写入过程中被改
+      withStore((s) => { s.stats = snapshot; s.phase = ctx.phase; s.now = cur; }).catch(() => {});
+    }, 1500);
+  }
+  function stopStatsSync() {
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  }
+
   async function getBeh() {
     const d = await chrome.storage.local.get(["xa_settings", "xa_llm"]);
     const s = d.xa_settings || {};
@@ -634,6 +649,27 @@
     };
   }
 
+  /* 给生成器准备「我以前说过什么」：
+   *   - 全局历史：最近发过的 100 条评论（换角度，别复读）
+   *   - 同作者历史：给这个人发过的所有评论（在别人主页最容易复读，重点防它）
+   * 返回 { myReplies, replies } 补到 post 上，再交给 COMMENT_GEN.generate。 */
+  async function withAntiRepeat(post) {
+    const s = await storeGet();
+    const all = Object.values(s.replied || {}).map((r) => r && r.text).filter(Boolean);
+    COMMENT_GEN.setHistory(all);
+    const handle = (post.handle || "").toLowerCase();
+    const sameAuthor = (s.records || [])
+      .filter((r) => (r.handle || "").toLowerCase() === handle && r.actions && r.actions.comment)
+      .map((r) => r.actions.comment)
+      .filter(Boolean);
+    return { ...post,
+             myReplies: [...sameAuthor, ...all.slice(-40)],
+             replies: (post.replies || []) };
+  }
+
+  // 发成功后把这条记进历史，供后续去重
+  function noteComment(text) { COMMENT_GEN.pushHistory(text); }
+
   async function startSession() {
     const beh = await getBeh();
     SOP.setExtraKeywords(beh.focus_keywords);   // 面板自定义的重点关键词生效
@@ -645,11 +681,46 @@
     saveCtx(ctx);
     await logAct(`会话开始：时间盒 ${beh.session_minutes} 分钟 · 速度系数 ${SPD}（1=原速，越大越慢）`);
     if (!_off.calibrated) await calibrateOffset();
+    startStatsSync();       // 会话统计实时同步到控制台
+    // 【用户要求 1】任务开始先刷新一次时间线，保证拿到的是最新的帖子
+    if (!onHome()) await goHome();
+    else {
+      await logAct("开始前先刷新时间线，拉最新一批帖子", "nav");
+      await hardRefreshTimeline();
+    }
     loop();
+  }
+
+  /* 强制刷新时间线：
+   * 优先点「Show N posts」/「新帖」按钮；没有就滚到顶再点一次首页 tab（UI 内重载）。 */
+  async function hardRefreshTimeline() {
+    const before = timelineSig();
+    const pill = findNewPostsPill();
+    if (pill && await clickEl(pill, { settle: [1500, 2600] })) {
+      if (await waitTimelineChange(before, 15000, "开始刷新")) return true;
+    }
+    // 滚到顶部后点一下当前 tab（For You），触发重新拉取
+    for (let i = 0; i < 6; i++) { await scrollBy(-3); await sleep(rnd(300, 600) * SPD); }
+    if (await clickSel(SEL.navHome, { settle: [1500, 2600] })) {
+      return await waitTimelineChange(before, 15000, "首页刷新");
+    }
+    return false;
+  }
+
+  // 找「Show N posts」/「新帖」按钮（按可见文案，X 会改版）
+  function findNewPostsPill() {
+    return [...document.querySelectorAll("button, div[role='button']")].find((el) => {
+      const t = (el.innerText || "").trim();
+      if (!t || t.length > 40) return false;
+      if (!/Show\s+\d+\s+posts?|显示\s*\d+\s*条|\d+\s*posts?|新帖子|新帖子?显示|new\s+posts?/i.test(t)) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    }) || null;
   }
 
   function stopSession(reason) {
     if (ctx) { ctx.run = false; saveCtx(ctx); }
+    stopStatsSync();
     logAct(`会话结束：${reason || "手动停止"}`);
     send({ t: "round-done" }).catch(() => {});
   }
@@ -674,24 +745,45 @@
       if (await waitMoreArticles(before, 20000)) { ctx.scrollTries = 0; return; }
       ctx.scrollTries = (ctx.scrollTries || 0) + 1;
       if (ctx.scrollTries >= 2) {
-        // 【门槛】用户要求：至少读十几篇才刷新。
-        // 刚跑一两篇就回顶 = 反复刷同几条帖子，看起来最像脚本。
+        // 【用户要求 6】如果 1 分钟内反复出现已看过的帖子 → 立刻点「Show N posts」拉新；
+        // 超过 1 分钟还这样，说明刷新也没用，强制再刷一次。
+        const now = Date.now();
+        ctx.oldSince = ctx.oldSince || now;
+        const stuckMs = now - ctx.oldSince;
+
+        // 先试着点那颗「Show N posts」按钮（用户明确说就是这个）
+        const pill = findNewPostsPill();
+        if (pill && stuckMs < 60000) {
+          const beforeSig = timelineSig();
+          if (await clickEl(pill, { settle: [1500, 2600] })) {
+            await logAct(`又出现看过的帖子 → 点「${(pill.innerText || "").trim().slice(0, 20)}」拉新帖`, "nav");
+            if (await waitTimelineChange(beforeSig, 15000, "拉新帖")) {
+              ctx.oldSince = 0; ctx.scrollTries = 0; return;
+            }
+          }
+        }
+
         const readThisRun = ctx.homeReads || 0;
         const MIN_READ = beh.min_read_before_refresh ?? 12;
-        if (readThisRun < MIN_READ) {
+        if (readThisRun < MIN_READ && stuckMs < 60000) {
           await logAct(`读到的都是旧帖，但本轮才读 ${readThisRun}/${MIN_READ} 篇 —— 继续往下翻，先不刷新`, "wait");
           ctx.scrollTries = 0;
           await sleep(rnd(3000, 6000) * SPD);
           return;
         }
-        await logAct("连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 回顶部拉新帖", "wait");
-        await refreshOrTop("滑到旧帖区/加载停滞");
-        ctx.homeReads = 0;          // 刷过一轮，重新计数
+
+        await logAct(stuckMs >= 60000
+          ? "连续 1 分钟以上都是看过的旧帖 → 强制刷新"
+          : "连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 回顶部拉新帖", "wait");
+        await refreshOrTop("旧帖卡住");
+        ctx.homeReads = 0;
+        ctx.oldSince = 0;
         ctx.scrollTries = 0;
         await sleep(rnd(8000, 15000) * SPD);
       }
       return;
     }
+    ctx.oldSince = 0;   // 出了新帖就清空「旧帖计时」
     // 选帖策略：按质量加权（重点领域 > 互动帖 > 内容质量），不是无脑第一条
     fresh.forEach((t) => ctx.seen.push(t.id));
 
@@ -863,7 +955,7 @@
     if (likedDetail) acts.like = true;
 
     if (ctx.plan.doCmt && (await budgetLeft("reply", beh.limits.reply)) > 0) {
-      const gen = await COMMENT_GEN.generate(post, beh, beh.llm);
+      const gen = await COMMENT_GEN.generate(await withAntiRepeat(post), beh, beh.llm);
       const text = (gen.text || "").trim();
       if (text) {
         const r = await replyCurrent(text, beh);
@@ -873,6 +965,7 @@
             s.replied[tw.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
           });
           acts.comment = text.slice(0, 120);
+          noteComment(text);
           await logAct(`✓ 评论 @${post.handle}：${text}（${text.length} 字）`, "cmt");
           await sleep(writeGap(beh));   // 写操作间隔：真人不会连发
         } else {
@@ -974,7 +1067,8 @@
       const canLike = (await budgetLeft("like", beh.limits.like)) > 0 && !SOP.shouldSkip(t, beh)[0];
       const wantCmt = canCmt && (!canLike || Math.random() < 0.5);   // 两边都行时五五开
       if (wantCmt) {
-        const gen = await COMMENT_GEN.generate(t, beh, beh.llm);
+        // 主页是重复评论的高发区：同一作者的多条帖子连着评，必须带同作者历史去重
+        const gen = await COMMENT_GEN.generate(await withAntiRepeat(t), beh, beh.llm);
         const text = (gen.text || "").trim();
         if (text) {
           const art = [...document.querySelectorAll(SEL.article)]
@@ -990,6 +1084,7 @@
               await withStore((s) => {
                 s.replied[t.id] = { at: new Date().toISOString(), text: text.slice(0, 120) };
               });
+              noteComment(text);
               await recordTweet(t, { comment: text.slice(0, 120) });
               await logAct(`✓ 主页互动：评论 @${handle}：${text.slice(0, 40)}`);
               await sleep(writeGap(beh));
@@ -1091,26 +1186,59 @@
     }
 
     const p = beh.explore_prob ?? 0.5;
-    // 逐个摇概率，命中第一个就进主页
-    for (const h of cands.slice(0, 5)) {
-      if (Math.random() > p) {
-        await logAct(`发现页 @${h}：概率外（${(p * 100) | 0}%），不点进去`);
-        continue;
-      }
+    /* 用户要求 3：这个概率 = 「未关注的用户里，有多大概率点进主页浏览再关注」。
+     * 没命中的不是跳过，而是**直接在侧边栏那一行点关注**（不必进主页）。
+     * 命中的才点进主页走「翻 10 条 + 随机互动 + 关注」。 */
+    let inlineFollowed = 0;
+    for (const h of cands.slice(0, 6)) {
       const cell = [...document.querySelectorAll(SEL.article), ...document.querySelectorAll(SEL.userCell)]
         .find((el) => [...el.querySelectorAll('a[href^="/"]')]
           .some((a) => (a.getAttribute("href") || "").toLowerCase() === "/" + h));
-      const link = cell && (cell.querySelector(SEL.userNameLink) || cell.querySelector('a[href="/' + h + '"]'));
-      if (!link) continue;
-      if (!(await clickEl(link, { settle: [1500, 2600] }))) continue;
-      ctx.current = { handle: h, text: "", id: "", href: "" };
-      ctx.pendingActs = {};
-      ctx.phase = "profile";
-      await logAct(`发现页 命中 ${(p * 100) | 0}% 概率 → 点进 @${h} 主页查看`);
-      saveCtx(ctx);
-      return;
+      if (!cell) continue;
+
+      if (Math.random() <= p) {
+        // 命中 → 点进主页
+        const link = cell.querySelector(SEL.userNameLink) || cell.querySelector('a[href="/' + h + '"]');
+        if (!link) continue;
+        if (!(await clickEl(link, { settle: [1500, 2600] }))) continue;
+        ctx.current = { handle: h, text: "", id: "", href: "" };
+        ctx.pendingActs = {};
+        ctx.phase = "profile";
+        await logAct(`发现页 命中 ${(p * 100) | 0}% → 点进 @${h} 主页浏览后关注`, "nav");
+        saveCtx(ctx);
+        return;
+      }
+
+      // 未命中 → 就地关注（侧边栏/发现页那一行的 Follow 按钮），不进主页
+      if ((await budgetLeft("follow", beh.limits.follow)) <= 0) {
+        await logAct(`发现页 @${h}：概率外（${(p * 100) | 0}%），但关注额度满了，跳过`, "skip");
+        continue;
+      }
+      const box = cell.closest('[data-testid="cellInnerDiv"]') || cell;
+      const btn = box.querySelector(SEL.follow);
+      if (!btn) { await logAct(`发现页 @${h}：概率外且这一行没有关注按钮，跳过`, "skip"); continue; }
+      if (!(await clickEl(btn, { settle: [900, 1600] }))) continue;
+      // 验证：按钮翻成 unfollow 才算成功
+      let on = false;
+      const end = Date.now() + 6000;
+      while (Date.now() < end) {
+        if (box.querySelector(SEL.unfollow)) { on = true; break; }
+        await sleep(500);
+      }
+      if (on) {
+        inlineFollowed++;
+        ctx.stats.followed++; await addEvent("follow");
+        await withStore((st) => {
+          st.followed[h] = { at: new Date().toISOString(), reason: "发现页未命中概率，就地关注" };
+        });
+        await logAct(`✓ 发现页 @${h}：概率外（${(p * 100) | 0}%）→ 直接就地关注（不进主页）`, "follow");
+        await sleep(rnd(2000, 5000) * SPD);
+      } else {
+        await logAct(`✗ 发现页 @${h}：就地关注没生效（按钮没翻转）`, "fail");
+      }
     }
-    await logAct("发现页这一轮没命中概率，回首页继续刷");
+    if (inlineFollowed) await logAct(`发现页本轮就地关注了 ${inlineFollowed} 个`, "follow");
+    await logAct("发现页这一轮处理完，回首页继续刷");
     ctx.phase = "home"; await goHome(); saveCtx(ctx);
   }
 
@@ -1161,7 +1289,7 @@
       ctx.phase = "notif"; await gotoNotifications(); saveCtx(ctx); return;
     }
     if ((await budgetLeft("reply", beh.limits.reply)) > 0) {
-      const gen = await COMMENT_GEN.generate(post, beh, beh.llm);
+      const gen = await COMMENT_GEN.generate(await withAntiRepeat(post), beh, beh.llm);
       const text = (gen.text || "").trim();
       if (text) {
         const r = await replyCurrent(text, beh);
@@ -1169,6 +1297,7 @@
           ctx.stats.commented++; await addEvent("reply");
           await withStore((s) => {
             s.replied[ctx.current.id] = { at: new Date().toISOString(), text: text.slice(0, 120), via: "notification" };
+          noteComment(text);
           });
           await recordTweet(post, { comment: text.slice(0, 120), via: "notification" });
           await logAct(`✓ 回复 @${post.handle || ctx.current.handle}：${text.slice(0, 40)}`);
