@@ -1,4 +1,4 @@
-﻿/* content.js —— 页面操作 + 会话状态机（Python 版 pages/x_twitter.py + tools/x_session.py 的移植）
+/* content.js —— 页面操作 + 会话状态机（Python 版 pages/x_twitter.py + tools/x_session.py 的移植）
  *
  * 分工：
  *   · 本文件只碰 DOM：读帖、找元素、算坐标；所有「点击/打字/滚轮」经
@@ -803,6 +803,14 @@
     SPD = Math.max(0.5, Math.min(3, s.speed ?? 1.5));   // 全局速度系数生效点
     return {
       typing_ms: s.typing_ms ?? 130, session_minutes: s.session_minutes ?? 30,
+      // 会话时长随机区间（本轮跑多久也在区间里抽，避免每轮时长一模一样）
+      session_min_min: s.session_min_min ?? 18,
+      session_max_min: s.session_max_min ?? 45,
+      session_jitter: s.session_jitter !== false,
+      // 评论审核（不及格就跳过不发）
+      review_enabled: s.review_enabled !== false,
+      review_threshold: s.review_threshold ?? 60,
+      review_banned: s.review_banned || "",
       like_prob: s.like_prob ?? 0.85, comment_prob: s.comment_prob ?? 0.85,
       expand_prob: s.expand_prob ?? 0.9, bookmark_prob: s.bookmark_prob ?? 0.3,
       explore_prob: s.explore_prob ?? 0.5,
@@ -879,15 +887,26 @@
     stopLoop();                            // 清掉可能残留的旧定时器
     const beh = await getBeh();
     SOP.setExtraKeywords(beh.focus_keywords);   // 面板自定义的重点关键词生效
+
+    /* 会话时长也随机：固定跑 30 分钟整，在平台侧看就是脚本
+     * （每次在线时长方差为 0，人做不到）。所以在 [min, max] 里抽一个值。
+     * session_minutes 作为中点/兜底，随机开关关闭时就用它。 */
+    const smin = Math.max(3, Math.round(beh.session_min_min || beh.session_minutes || 30));
+    const smax = Math.max(smin, Math.round(beh.session_max_min || beh.session_minutes || 30));
+    const dur = beh.session_jitter !== false && smax > smin
+      ? smin + Math.floor(Math.random() * (smax - smin + 1))
+      : Math.round(beh.session_minutes || 30);
+
     ctx = { run: true, phase: beh.notif_enabled ? "notif" : "home",
             feed: beh.feed,                     // 会话默认进的栏目（面板设置）
             feedNow: beh.feed,                  // 当前实际所在栏目（会随刷新失败切换）
-            deadline: Date.now() + beh.session_minutes * 60000,
+            deadline: Date.now() + dur * 60000,
+            durMin: dur,
             started: Date.now(), seen: [], stats: { read: 0, expanded: 0, liked: 0,
             commented: 0, bookmarked: 0, followed: 0, skipped: 0 },
             notifTodo: [], current: null, plan: null };
     saveCtx(ctx);
-    await logAct(`会话开始：时间盒 ${beh.session_minutes} 分钟 · 速度系数 ${SPD}（1=原速，越大越慢）`);
+    await logAct(`会话开始：本轮随机时长 ${dur} 分钟（区间 ${smin}~${smax}） · 速度系数 ${SPD}（1=原速，越大越慢）`);
     if (!_off.calibrated) await calibrateOffset();
     startStatsSync();       // 会话统计实时同步到控制台
     // 【用户要求 1】任务开始先刷新一次时间线，保证拿到的是最新的帖子
@@ -1772,7 +1791,7 @@
         if (Date.now() >= ctx.deadline) {
           const st = ctx.stats;
           await logAct(`结束：读 ${st.read} 展开 ${st.expanded} 赞 ${st.liked} 评 ${st.commented} 藏 ${st.bookmarked} 关注 ${st.followed} 滑过 ${st.skipped}`);
-          stopSession("时间盒到点");
+          stopSession(`本轮 ${ctx.durMin || "?"} 分钟跑满`);
           return;
         }
         const beh = await getBeh();

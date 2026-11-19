@@ -72,8 +72,19 @@ async function injectAllX() {
   return n;
 }
 
-chrome.runtime.onInstalled.addListener(() => { injectAllX().catch(() => {}); });
-chrome.runtime.onStartup.addListener(() => { injectAllX().catch(() => {}); });
+chrome.runtime.onInstalled.addListener(() => { injectAllX().catch(() => {}); resumeAuto(); });
+chrome.runtime.onStartup.addListener(() => { injectAllX().catch(() => {}); resumeAuto(); });
+
+/* 浏览器/扩展重启后恢复自动任务。
+ * alarms 本身会跨重启保留，但配置可能被改过、或 alarm 已被清掉，
+ * 所以统一按「当前配置」重排一次，保证状态一致。 */
+async function resumeAuto() {
+  try {
+    const cfg = await getAuto();
+    if (cfg.auto_on) await scheduleNext(cfg);
+    else await chrome.alarms.clear(ALARM);
+  } catch (_) {}
+}
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.status !== "complete") return;
   if (!/^https:\/\/x\.com\//.test(tab.url || "")) return;
@@ -190,32 +201,157 @@ async function llmChat({ system, user, cfg }) {
   return (j.choices?.[0]?.message?.content || "").trim();
 }
 
-// ---------------- 轮次调度：每 30 分钟一轮 30 分钟会话 ----------------
+// ---------------- 轮次调度：在随机区间内自动开新一轮 ----------------
+/* 用户要求：不能定死一个时间，要是随机动态范围。
+ *
+ * 为什么必须随机：固定间隔（每 30 分钟整）在平台侧看就是脚本特征——
+ * 行为间隔的方差接近 0，人做不到。所以每轮结束后重新掷一次随机值。
+ *
+ * chrome.alarms 单次只设一个时间点，所以不用 periodInMinutes，
+ * 而是每轮结束时用 when 指定下一次的绝对时间，形成随机间隔的滚动链。
+ */
 
 const ALARM = "xa-round";
+const AUTO_DEFAULTS = {
+  auto_on: false,
+  auto_min: 40,        // 最短间隔（分钟）
+  auto_max: 110,       // 最长间隔（分钟）
+  auto_quiet_start: 1, // 安静时段开始（1 点）
+  auto_quiet_end: 8,   // 安静时段结束（8 点）—— 深夜不动，像人一样
+  auto_jitter: true,   // 区间内随机（关掉则用中点固定值）
+  auto_max_rounds: 0,  // 0 = 不限轮数
+};
+
+// 在 [lo, hi] 里随机一个整数分钟
+function pickGap(min, max, jitter) {
+  const lo = Math.max(1, Math.round(min || 40));
+  const hi = Math.max(lo, Math.round(max || 110));
+  if (!jitter) return Math.round((lo + hi) / 2);
+  return lo + Math.floor(Math.random() * (hi - lo + 1));
+}
+
+/* 把「从现在起 N 分钟后」调整到安静时段之外。
+ * 人不会每天凌晨 3 点准时发帖，深夜执行反而是最明显的机器特征。 */
+function avoidQuiet(ts, qStart, qEnd) {
+  const d = new Date(ts);
+  const h = d.getHours();
+  const s = Number(qStart), e = Number(qEnd);
+  if (!(s < e) || s === e) return ts;        // 时段无效或全天不禁 → 不改
+  if (h >= s && h < e) {
+    // 落在安静时段里 → 推到今天/明天的结束点，再加一点随机偏移
+    d.setHours(e, Math.floor(Math.random() * 40), 0, 0);
+    if (d.getTime() <= ts) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  return ts;
+}
+
+async function getAuto() {
+  const st = await chrome.storage.local.get(["xa_settings"]);
+  return { ...AUTO_DEFAULTS, ...((st.xa_settings || {}).auto || {}) };
+}
+
+/* 排下一次。返回下一次的时间戳。 */
+async function scheduleNext(cfg) {
+  const c = cfg || await getAuto();
+  if (!c.auto_on) { await chrome.alarms.clear(ALARM); return 0; }
+
+  // 轮数上限到了就停
+  if (c.auto_max_rounds > 0) {
+    const st = await chrome.storage.local.get(["xa_auto_state"]);
+    const done = (st.xa_auto_state || {}).done || 0;
+    if (done >= c.auto_max_rounds) {
+      await chrome.alarms.clear(ALARM);
+      await chrome.storage.local.set({
+        xa_auto_state: { ...(st.xa_auto_state || {}), running: false, stopped: "轮数已达上限" },
+      });
+      return 0;
+    }
+  }
+
+  const gap = pickGap(c.auto_min, c.auto_max, c.auto_jitter !== false);
+  let when = Date.now() + gap * 60000;
+  when = avoidQuiet(when, c.auto_quiet_start, c.auto_quiet_end);
+
+  /* 兜底：间隔不能短于会话时长，否则下一轮会在上一轮还没跑完时就开。
+   * 会话时长本身是随机的（18~45 分钟），这里按最大值算，避免踩线。 */
+  const stS = await chrome.storage.local.get(["xa_settings"]);
+  const ss = stS.xa_settings || {};
+  const maxDur = Math.max(3, Math.round(ss.session_max_min || ss.session_minutes || 30));
+  const floor = Date.now() + (maxDur + 3) * 60000;
+  if (when < floor) when = floor + Math.floor(Math.random() * 5) * 60000;
+
+  // 晚于 1 分钟才有效（chrome.alarms 要求未来时间）
+  when = Math.max(when, Date.now() + 60000);
+  await chrome.alarms.create(ALARM, { when });
+
+  const prev = (await chrome.storage.local.get(["xa_auto_state"])).xa_auto_state || {};
+  await chrome.storage.local.set({
+    xa_auto_state: {
+      ...prev,
+      running: true,
+      stopped: "",
+      nextAt: when,
+      nextIn: Math.round((when - Date.now()) / 60000),
+      plannedGap: gap,
+      updatedAt: new Date().toLocaleString(),
+    },
+  });
+  return when;
+}
 
 async function scheduleRounds(on) {
-  if (on) {
-    await chrome.alarms.create(ALARM, { periodInMinutes: 30 });
-    const st = await chrome.storage.local.get(["xa_rounds"]);
-    const rounds = st.xa_rounds || { done: 0 };
-    rounds.next = Date.now() + 30 * 60000;
-    await chrome.storage.local.set({ xa_rounds: rounds });
-  } else {
+  if (!on) {
     await chrome.alarms.clear(ALARM);
+    const st = await chrome.storage.local.get(["xa_settings"]);
+    const s = st.xa_settings || {};
+    if (s.auto) { s.auto.auto_on = false; await chrome.storage.local.set({ xa_settings: s }); }
+    await chrome.storage.local.set({
+      xa_auto_state: { ...((await chrome.storage.local.get(["xa_auto_state"])).xa_auto_state || {}),
+                       running: false, stopped: "手动关闭" },
+    });
+    return 0;
   }
+  const st = await chrome.storage.local.get(["xa_settings"]);
+  const s = st.xa_settings || {};
+  s.auto = { ...AUTO_DEFAULTS, ...(s.auto || {}), auto_on: true };
+  await chrome.storage.local.set({ xa_settings: s });
+  return scheduleNext(s.auto);
 }
 
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== ALARM) return;
   const [tab] = await chrome.tabs.query({ url: "https://x.com/*" });
-  if (!tab) return;
+  const st0 = await chrome.storage.local.get(["xa_auto_state"]);
+  const prev = st0.xa_auto_state || {};
+
+  if (!tab) {
+    // 没有 x.com 标签页就跑不了，但不要放弃整个计划，继续排下一轮
+    await chrome.storage.local.set({
+      xa_auto_state: { ...prev, last: new Date().toLocaleString(), lastResult: "没有打开的 x.com 标签页，跳过" },
+    });
+    await scheduleNext();
+    return;
+  }
+
+  /* 上一轮还没跑完就不要叠着开新的。
+   * 会话时长（默认 30 分钟）可能比最小间隔还长，不检查就会两个会话同时操作页面。 */
+  const stRun = await chrome.storage.local.get(["xa_state"]);
+  const running = !!(stRun.xa_state && stRun.xa_state.running);
+  if (running) {
+    await chrome.storage.local.set({
+      xa_auto_state: { ...prev, last: new Date().toLocaleString(), lastResult: "上一轮还在跑，跳过这次" },
+    });
+    await scheduleNext();
+    return;
+  }
+
   chrome.tabs.sendMessage(tab.id, { t: "cmd", op: "start" }).catch(() => {});
-  const st = await chrome.storage.local.get(["xa_rounds"]);
-  const rounds = st.xa_rounds || { done: 0 };
-  rounds.done = (rounds.done || 0) + 1; rounds.last = new Date().toLocaleString();
-  rounds.next = Date.now() + 30 * 60000;
-  await chrome.storage.local.set({ xa_rounds: rounds });
+  const done = (prev.done || 0) + 1;
+  await chrome.storage.local.set({
+    xa_auto_state: { ...prev, done, last: new Date().toLocaleString(), lastResult: "已开始新一轮" },
+  });
+  await scheduleNext();
 });
 
 // ---------------- 消息路由 ----------------
@@ -256,8 +392,28 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
     } else if (m.t === "llm") {
       try { reply(await llmChat(m)); } catch (e) { reply({ __error: String(e.message || e) }); }
     } else if (m.t === "rounds") {
-      await scheduleRounds(!!m.on);
-      reply({ ok: true, on: !!m.on });
+      const when = await scheduleRounds(!!m.on);
+      reply({ ok: true, on: !!m.on, nextAt: when });
+    } else if (m.t === "auto_get") {
+      const cfg = await getAuto();
+      const st = await chrome.storage.local.get(["xa_auto_state"]);
+      const alarm = await chrome.alarms.get(ALARM);
+      reply({ ok: true, cfg, state: st.xa_auto_state || {},
+              nextAt: alarm ? alarm.scheduledTime : 0, on: !!alarm });
+    } else if (m.t === "auto_set") {
+      // 存配置并按新配置重排下一次
+      const st = await chrome.storage.local.get(["xa_settings"]);
+      const s = st.xa_settings || {};
+      s.auto = { ...AUTO_DEFAULTS, ...(s.auto || {}), ...(m.cfg || {}) };
+      await chrome.storage.local.set({ xa_settings: s });
+      if (m.resetCount) {
+        await chrome.storage.local.set({ xa_auto_state: { done: 0 } });
+      }
+      const when = await scheduleNext(s.auto);
+      reply({ ok: true, nextAt: when });
+    } else if (m.t === "auto_stop") {
+      await scheduleRounds(false);
+      reply({ ok: true });
     } else if (m.t === "open-dashboard") {
       await chrome.windows.create({ url: chrome.runtime.getURL("dashboard.html"),
                                    type: "popup", width: 1180, height: 860 });
@@ -268,7 +424,18 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
     } else if (m.t === "ui-ping") {
       reply({ ok: true });   // content 记了活动，面板自己会拉
     } else if (m.t === "round-done") {
-      reply({ ok: true });   // 会话到点：周期 alarm 还在，无需处理
+      /* 会话结束 → 立刻排下一轮。
+       * 关键：间隔必须从「这一轮真正结束」开始算，而不是从上一轮开始时算。
+       * 否则会话时长一变，间隔就跟着被动变化，容易出现「刚跑完马上又开」。
+       * 这里重排一次，把基准点挪到结束时刻。 */
+      const st = await chrome.storage.local.get(["xa_auto_state"]);
+      const prev = st.xa_auto_state || {};
+      await chrome.storage.local.set({
+        xa_auto_state: { ...prev, lastEnd: new Date().toLocaleString() },
+      });
+      const cfg = await getAuto();
+      if (cfg.auto_on) await scheduleNext(cfg);
+      reply({ ok: true, rescheduled: !!cfg.auto_on });
     } else {
       reply({ ok: false, error: "unknown" });
     }

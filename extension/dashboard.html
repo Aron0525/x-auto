@@ -122,7 +122,7 @@
   <div style="flex:1"></div>
   <button id="start">▶ 开始一轮会话</button>
   <button id="stop" class="stop" disabled>■ 停止</button>
-  <button id="rounds" class="ghost">循环：关</button>
+  <button id="rounds" class="ghost">定时：关</button>
   <button id="openX" class="ghost">打开 x.com</button>
 </header>
 
@@ -137,6 +137,50 @@
   <!-- 控制面板 -->
   <section id="sec-ctrl" class="cur">
     <!-- 顶部：额度 + 统计，全部可点 -->
+    <div class="card">
+      <div class="cardHead">
+        <h2 style="margin:0">定时自动执行 <span style="color:#71767b;font-size:11px;font-weight:400">随机间隔，不定死时间</span></h2>
+        <span id="autoBadge" style="font-size:11px;color:#71767b">未开启</span>
+      </div>
+      <p style="color:#71767b;font-size:12px;margin:8px 0 12px">
+        每轮结束后，在下面这个区间里<b>随机</b>抽一个时间点开下一轮。间隔每次都不同，
+        不会被看出是机器在按固定节拍跑。</p>
+
+      <div class="row"><label>开启定时</label>
+        <input type="checkbox" id="auto_on">
+        <span class="hint">勾上后自动按随机间隔开新会话</span></div>
+      <div class="row"><label>间隔最短</label>
+        <input type="number" id="auto_min" min="5" max="720" step="5">
+        <span class="hint">分钟。建议 40 以上</span></div>
+      <div class="row"><label>间隔最长</label>
+        <input type="number" id="auto_max" min="5" max="720" step="5">
+        <span class="hint">分钟。建议是最短的 2~3 倍</span></div>
+      <div class="row"><label>夜间安静</label>
+        <input type="number" id="auto_quiet_start" min="0" max="23" style="width:64px">
+        <span style="color:#71767b">点到</span>
+        <input type="number" id="auto_quiet_end" min="0" max="23" style="width:64px">
+        <span class="hint">点之间不执行（如 1 点到 8 点）。人不会凌晨定时发帖</span></div>
+      <div class="row"><label>最多跑几轮</label>
+        <input type="number" id="auto_max_rounds" min="0" max="999" style="width:80px">
+        <span class="hint">0 = 不限，一直跑</span></div>
+      <div class="row"><label>真随机</label>
+        <input type="checkbox" id="auto_jitter">
+        <span class="hint">取消勾选则用区间中点固定值（不推荐）</span></div>
+
+      <div class="row" style="flex-wrap:wrap;margin-top:4px">
+        <button id="autoSave">保存并排程</button>
+        <button id="autoStop" class="ghost">停止定时</button>
+        <button id="autoReset" class="ghost">轮数归零</button>
+      </div>
+
+      <div id="autoState" class="tip" style="margin-top:12px;display:none"></div>
+      <div class="tip warn" style="margin-top:10px">
+        <b>随机区间的意义</b>：固定间隔（每 30 分钟整）在平台侧看就是脚本特征——
+        行为间隔方差接近 0，人做不到。区间随机 + 夜间静默，才像一个有作息的人在刷手机。<br>
+        <b>注意</b>：自动执行需要浏览器开着且有 x.com 标签页。关掉浏览器不会执行。
+      </div>
+    </div>
+
     <div class="card">
       <h2>今日额度 <span style="color:#71767b;font-size:11px;font-weight:400">点任意一项查看具体做了什么</span></h2>
       <div class="statbar" id="quota"></div>
@@ -153,8 +197,16 @@
           <h2>行为参数</h2>
 
           <div class="sec-title">节奏</div>
+          <div class="row"><label>本轮时长</label>
+            <input type="number" id="session_min_min" min="3" max="180" style="width:64px">
+            <span style="color:#71767b">到</span>
+            <input type="number" id="session_max_min" min="3" max="180" style="width:64px">
+            <span class="hint">分钟。每轮在这个区间里<b>随机</b>抽一个时长</span></div>
+          <div class="row"><label>时长随机</label>
+            <input type="checkbox" id="session_jitter">
+            <span class="hint">取消勾选则每轮都跑「会话分钟」固定值（不推荐）</span></div>
           <div class="row"><label>会话分钟</label><input type="number" id="session_minutes" min="5" max="60">
-            <span class="hint">一轮跑多久</span></div>
+            <span class="hint">随机关闭时的固定时长</span></div>
           <div class="row"><label>打字 ms/字</label><input type="number" id="typing_ms" min="50" max="500">
             <span class="hint">每字符间隔，130 ≈ 真人速度</span></div>
           <div class="row"><label>速度系数</label><input type="number" id="speed" min="0.5" max="3" step="0.1">

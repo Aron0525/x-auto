@@ -71,7 +71,7 @@ async function refresh() {
   $("start").disabled = running;
   $("stop").disabled = !running;
 
-  const st = await chrome.storage.local.get(["xa_state", "xa_rounds"]);
+  const st = await chrome.storage.local.get(["xa_state"]);
   const s = st.xa_state || {};
   const today = new Date().toISOString().slice(0, 10);
   const cnt = (k) => (s.events || []).filter((e) => e.kind === k && (e.at || "").startsWith(today)).length;
@@ -81,9 +81,19 @@ async function refresh() {
     `<span class="stat">关注 ${cnt("follow")}</span>` +
     `<span class="stat">留档 ${(s.records || []).length}</span>`;
 
-  const rounds = st.xa_rounds || {};
-  $("rounds").textContent = rounds.on ? `循环：开（${rounds.done || 0} 轮）` : "循环：关";
-  $("rounds").classList.toggle("ghost", !rounds.on);
+  // 定时状态由 background 统一管理（随机间隔），这里只读展示
+  const auto = await chrome.runtime.sendMessage({ t: "auto_get" }).catch(() => null);
+  const autoOn = !!(auto && auto.on);
+  const btn = $("rounds");
+  if (btn) {
+    if (autoOn) {
+      const mins = auto.nextAt ? Math.max(0, Math.round((auto.nextAt - Date.now()) / 60000)) : 0;
+      btn.textContent = `定时：开（${mins} 分钟后）`;
+    } else {
+      btn.textContent = "定时：关";
+    }
+    btn.classList.toggle("ghost", !autoOn);
+  }
 
   const log = (s.activity || []).slice(-120).map((a) => `[${a.at}] ${a.msg}`).join("\n");
   const el = $("log");
@@ -92,13 +102,13 @@ async function refresh() {
 }
 
 async function toggleRounds() {
-  const st = await chrome.storage.local.get(["xa_rounds"]);
-  const rounds = st.xa_rounds || {};
-  const on = !rounds.on;
-  await chrome.runtime.sendMessage({ t: "rounds", on });
-  rounds.on = on;
-  await chrome.storage.local.set({ xa_rounds: rounds });
+  const auto = await chrome.runtime.sendMessage({ t: "auto_get" }).catch(() => null);
+  const on = !!(auto && auto.on);
   if (on) {
+    await chrome.runtime.sendMessage({ t: "auto_stop" }).catch(() => {});
+  } else {
+    // 沿用已保存的随机区间，只把开关打开
+    await chrome.runtime.sendMessage({ t: "auto_set", cfg: { auto_on: true } }).catch(() => {});
     const tab = await xTab();
     if (tab) chrome.tabs.sendMessage(tab.id, { t: "cmd", op: "start" }).catch(() => {});
   }

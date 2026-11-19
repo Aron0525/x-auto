@@ -1,7 +1,7 @@
 ﻿/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
 
 const $ = (id) => document.getElementById(id);
-const NUM = ["session_minutes", "typing_ms", "follow_per_session",
+const NUM = ["session_minutes", "session_min_min", "session_max_min", "typing_ms", "follow_per_session",
              "max_like", "max_reply", "max_follow",
              "comment_target_len", "expand_char_min", "write_gap_min", "write_gap_max",
              "min_read_before_refresh", "follow_gap_min", "follow_gap_max", "follow_per_hour"];
@@ -9,10 +9,12 @@ const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "expl
               "like_prob_cap", "comment_prob_cap"];
 const TEXT = ["tone", "style", "feed", "llm_key", "llm_base", "llm_model",
               "comment_rule", "focus_keywords", "my_handles"];
-const FIELDS = [...NUM, ...PROB, ...TEXT, "speed"];
+const CHK = ["dedup_comment", "session_jitter"];
+const FIELDS = [...NUM, ...PROB, ...TEXT, ...CHK, "speed"];
 
 const DEFAULTS = {
-  session_minutes: 30, typing_ms: 130, speed: 1.5, feed: "for_you",
+  session_minutes: 30, session_min_min: 18, session_max_min: 45, session_jitter: true,
+  typing_ms: 130, speed: 1.5, feed: "for_you",
   like_prob: 0.85, comment_prob: 0.85, explore_prob: 0.5,
   expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 5,
   comment_rule: "mine", comment_target_len: 13,
@@ -59,6 +61,7 @@ async function loadSettings() {
   if (llm.model) $("llm_model").value = llm.model;
   $("notif_enabled").checked = !!s.notif_enabled;
   $("dedup_comment").checked = s.dedup_comment !== false;
+  $("session_jitter").checked = s.session_jitter !== false;
   updateKeyState();
   const sum = $("ruleSummary");
   if (sum) {
@@ -215,8 +218,12 @@ async function saveSettings() {
   }
   // 写操作间隔：确保下限 ≤ 上限
   if (s.write_gap_min > s.write_gap_max) s.write_gap_max = s.write_gap_min;
+  // 会话时长：确保下限 ≤ 上限
+  if (s.session_min_min && s.session_max_min && s.session_min_min > s.session_max_min)
+    s.session_max_min = s.session_min_min;
   s.notif_enabled = $("notif_enabled").checked;
   s.dedup_comment = $("dedup_comment").checked;
+  s.session_jitter = $("session_jitter").checked;
 
   // 关键：与已有设置**合并**，不能整体替换。
   // 侧边栏和这个控制台字段不完全相同，整体替换会互相抹掉对方保存的字段
@@ -489,11 +496,104 @@ async function refresh() {
   renderRecords(s);
   renderLog(s);
 
-  const rounds = d.xa_rounds || {};
-  $("rounds").textContent = rounds.on ? `循环：开（已 ${rounds.done || 0} 轮）` : "循环：关";
-  $("rounds").classList.toggle("ghost", !rounds.on);
-  $("roundInfo").innerHTML = rounds.on && rounds.next
-    ? `<span style="color:#71767b">下一轮 ${new Date(rounds.next).toLocaleTimeString()}</span>` : "";
+  await renderAuto();
+}
+
+/* ---------------- 定时自动执行 ---------------- */
+
+const AUTO_FIELDS = ["auto_on", "auto_min", "auto_max", "auto_quiet_start",
+                     "auto_quiet_end", "auto_max_rounds", "auto_jitter"];
+
+async function loadAuto() {
+  const r = await chrome.runtime.sendMessage({ t: "auto_get" }).catch(() => null);
+  if (!r || !r.ok) return;
+  const c = r.cfg || {};
+  $("auto_on").checked = !!c.auto_on;
+  $("auto_min").value = c.auto_min ?? 40;
+  $("auto_max").value = c.auto_max ?? 110;
+  $("auto_quiet_start").value = c.auto_quiet_start ?? 1;
+  $("auto_quiet_end").value = c.auto_quiet_end ?? 8;
+  $("auto_max_rounds").value = c.auto_max_rounds ?? 0;
+  $("auto_jitter").checked = c.auto_jitter !== false;
+  renderAutoState(r);
+}
+
+function renderAutoState(r) {
+  const box = $("autoState");
+  const badge = $("autoBadge");
+  const btn = $("rounds");
+  const st = (r && r.state) || {};
+  const on = !!(r && r.on);
+
+  if (badge) {
+    badge.innerHTML = on
+      ? '<span class="pill on">定时中</span>'
+      : '<span class="pill off">未开启</span>';
+  }
+  if (btn) { btn.textContent = on ? "定时：开" : "定时：关"; btn.classList.toggle("ghost", !on); }
+
+  if (!box) return;
+  if (!on) {
+    box.style.display = st.stopped ? "block" : "none";
+    if (st.stopped) box.innerHTML = `<span style="color:#ffd400">已停止</span> · ${esc(st.stopped)}`;
+    if ($("roundInfo")) $("roundInfo").innerHTML = "";
+    return;
+  }
+
+  const next = r.nextAt ? new Date(r.nextAt) : null;
+  const mins = next ? Math.max(0, Math.round((next - Date.now()) / 60000)) : 0;
+  const lines = [
+    `<b>等下一次</b> · 约 ${mins} 分钟后（${next ? next.toLocaleString("zh-CN") : "—"}）`,
+    `已执行 <b>${st.done || 0}</b> 轮${st.last ? ` · 上次 ${esc(st.last)}` : ""}` +
+      (st.lastResult ? ` · ${esc(st.lastResult)}` : ""),
+    st.plannedGap ? `这次抽到 <b>${st.plannedGap}</b> 分钟（区间内随机）` : "",
+  ].filter(Boolean);
+  box.style.display = "block";
+  box.innerHTML = lines.join("<br>");
+
+  if ($("roundInfo")) {
+    $("roundInfo").innerHTML = next
+      ? `<span style="color:#71767b">下一轮 ${next.toLocaleTimeString("zh-CN")}（${mins} 分钟后）</span>` : "";
+  }
+}
+
+async function saveAuto(resetCount) {
+  const min = Math.max(5, Math.min(720, parseInt($("auto_min").value, 10) || 40));
+  let max = Math.max(5, Math.min(720, parseInt($("auto_max").value, 10) || 110));
+  if (max < min) { max = min; $("auto_max").value = min; }
+  const cfg = {
+    auto_on: $("auto_on").checked,
+    auto_min: min, auto_max: max,
+    auto_quiet_start: Math.max(0, Math.min(23, parseInt($("auto_quiet_start").value, 10) || 0)),
+    auto_quiet_end: Math.max(0, Math.min(23, parseInt($("auto_quiet_end").value, 10) || 0)),
+    auto_max_rounds: Math.max(0, Math.min(999, parseInt($("auto_max_rounds").value, 10) || 0)),
+    auto_jitter: $("auto_jitter").checked,
+  };
+  const r = await chrome.runtime.sendMessage({ t: "auto_set", cfg, resetCount: !!resetCount }).catch(() => null);
+  await loadAuto();
+  if (!r || !r.ok) { flash("保存失败，检查扩展是否已重载", "warn"); return; }
+  if (!cfg.auto_on) { flash("已保存（定时未开启）", "warn"); return; }
+  const mins = r.nextAt ? Math.round((r.nextAt - Date.now()) / 60000) : 0;
+  flash(`定时已开启 · ${mins} 分钟后执行下一轮`, "on");
+}
+
+async function stopAuto() {
+  await chrome.runtime.sendMessage({ t: "auto_stop" }).catch(() => {});
+  await loadAuto();
+  flash("已停止定时", "warn");
+}
+
+/* 顶部按钮：一键开关（沿用当前区间设置） */
+async function toggleRounds() {
+  const r = await chrome.runtime.sendMessage({ t: "auto_get" }).catch(() => null);
+  const on = !!(r && r.on);
+  if (on) { await stopAuto(); return; }
+  $("auto_on").checked = true;
+  await saveAuto(false);
+}
+
+async function renderAuto() {
+  await loadAuto();
 }
 
 // ---------------- 动作 ----------------
@@ -569,6 +669,15 @@ document.querySelectorAll("nav button").forEach((b) => {
 $("start").onclick = start;
 $("stop").onclick = stop;
 $("rounds").onclick = toggleRounds;
+$("autoSave").onclick = () => saveAuto(false);
+$("autoStop").onclick = stopAuto;
+$("autoReset").onclick = async () => {
+  await saveAuto(true);
+  flash("轮数已归零", "on");
+};
+// 改动区间就重新排一次，让「下一次」立刻反映新设置
+["auto_min", "auto_max", "auto_quiet_start", "auto_quiet_end", "auto_jitter"]
+  .forEach((id) => { if ($(id)) $(id).onchange = () => { if ($("auto_on").checked) saveAuto(false); }; });
 $("save").onclick = saveSettings;
 $("reinject").onclick = reinject;
 $("export").onclick = exportRecords;
