@@ -142,39 +142,60 @@
   </div>
 
   <div class="card">
-    <h2>提示词（给模型的指令）</h2>
-    <p class="desc">这段会作为 system 消息发给模型。改成什么样，评论就长什么样。</p>
+    <h2>提示词（可保存多套，随时切换）</h2>
+    <p class="desc">每套提示词是一个「人格/风格设定」。程序运行时只用<b>当前选中</b>的那一套。</p>
+
+    <div class="row"><label>当前使用</label>
+      <select id="promptPreset"></select>
+      <button class="ghost" id="promptNew">新建一套</button>
+      <button class="ghost" id="promptDel">删除这套</button>
+    </div>
+    <div class="row"><label>这套叫</label>
+      <input type="text" id="promptName" placeholder="例如：随和短评 / 专业点评 / 犀利观点">
+      <span class="hint">名字只是给你自己看的，方便切换时认出来</span></div>
+
     <div class="ph" id="phRow"></div>
     <textarea id="comment_prompt" class="tall"></textarea>
+    <div class="row" style="margin-top:8px">
+      <span class="hint" id="promptMeta"></span>
+    </div>
     <div class="row" style="margin-top:10px">
-      <button class="ghost" id="resetPrompt">恢复默认提示词</button>
+      <button class="ghost" id="resetPrompt">恢复内置默认</button>
+      <button class="ghost" id="promptSaveAs">另存为新的一套</button>
       <span class="hint">点上面的占位符可以插入到光标处</span>
     </div>
-    <div class="tip warn">占位符 <code>{len}</code> <code>{lo}</code> <code>{hi}</code> <code>{cap}</code>
-      <code>{tone}</code> <code>{post}</code> 会在调用时自动替换成实际值，别删掉 <code>{len}</code> 和 <code>{cap}</code>，
-      否则模型不知道要写多长。</div>
+    <div class="tip">占位符 <code>{len}</code> <code>{lo}</code> <code>{hi}</code>
+      <code>{tone}</code> <code>{post}</code> 会在调用时替换成实际值。
+      <br>其中 <code>{tone}</code> 对应上面「语气与风格」里选的那项——
+      <b>提示词里没写 <code>{tone}</code>，语气选择就不生效</b>。
+      <br><code>{len}</code> 是目标字数（建议值，不是硬上限）；删掉它模型就不知道自己该多长，建议保留。</div>
   </div>
 
   <div class="card">
-    <h2>模板句（没配 API Key 时用）</h2>
-    <p class="desc">一行一句。<code>{p}</code> 会被替换成从原帖里抓出来的具体短语，保证评论「回应了帖子」。</p>
+    <h2>模板句（没配 API Key 时兜底用）</h2>
+    <p class="desc">一行一句，整句最好。<code>{p}</code> 可选，会被替换成从原帖抓出的完整短语。</p>
+    <div class="tip">内置模板已经按帖子类型分好类（亏损/独立开发/观点/里程碑/招人/预告/内容/争议），
+      自动挑对应场景的句子。<b>这里留空就用内置的</b>，填了就用你填的。</div>
     <textarea id="comment_templates" class="tall"></textarea>
     <div class="row" style="margin-top:10px">
-      <button class="ghost" id="resetTemplates">恢复默认模板</button>
+      <button class="ghost" id="resetTemplates">清空（用内置分场景模板）</button>
       <span class="hint" id="tplCount"></span>
     </div>
   </div>
 
   <div class="card">
-    <h2>实时预览</h2>
-    <p class="desc">按你当前填的模板和字数设置，模拟生成 6 条（用一条示例帖子）。改完上面的内容点这里刷新。</p>
-    <div class="row"><label>示例帖子</label>
-      <input type="text" id="samplePost" value="今天A股又跌了，仓位有点难受，但我觉得还是得看长期"></div>
+    <h2>用真实帖子试效果</h2>
+    <p class="desc">
+      下面 15 条是程序<b>实际浏览并保存下来的帖子</b>。点「一键生成」会用你现在选的提示词和模型，
+      给每条都生成一条评论，直接看效果对不对。
+    </p>
     <div class="row">
-      <button class="ghost" id="preview">重新生成预览</button>
-      <span class="hint">不调用模型，只演示模板效果</span>
+      <button id="genAll">一键生成评论（调用模型）</button>
+      <button class="ghost" id="reloadPosts">重新读取帖子</button>
+      <button class="ghost" id="genTpl">只用模板生成（不花额度）</button>
+      <span class="hint" id="genMsg"></span>
     </div>
-    <div class="live" id="liveBox"></div>
+    <div class="live" id="postList"></div>
   </div>
 
   <div class="actions">

@@ -231,6 +231,28 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       else if (m.op === "type") reply(await inputType(tabId, m.text, m.perCharMs));
       else if (m.op === "hotkey") reply(await inputHotkey(tabId, m.keys));
       else reply({ ok: false });
+    } else if (m.t === "get_posts_sample") {
+      /* 给「评论规则」窗口用：从已保存的浏览记录里随机取 N 条帖子正文，
+       * 用来看提示词效果。只读，不改任何状态。
+       * 只取有实际正文的（排除纯图/纯链接的短记录），并按文本去重。 */
+      const st = await chrome.storage.local.get(["xa_state"]);
+      const recs = (st.xa_state && st.xa_state.records) || [];
+      const seen = new Set();
+      const pool = [];
+      for (const r of recs) {
+        const text = String(r.text || "").trim();
+        if (text.length < 15) continue;
+        const key = text.slice(0, 40);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pool.push({ id: r.id, handle: r.handle, text });
+      }
+      // 随机打乱后取前 n 条
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      reply({ ok: true, items: pool.slice(0, Math.max(1, Math.min(50, m.n || 15))) });
     } else if (m.t === "llm") {
       try { reply(await llmChat(m)); } catch (e) { reply({ __error: String(e.message || e) }); }
     } else if (m.t === "rounds") {

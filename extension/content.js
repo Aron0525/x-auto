@@ -354,7 +354,17 @@
     await waitTimelineChange(before, 15000, label, waitSel);
     return true;
   }
-  const goHome = () => clickNav(SEL.navHome, "首页");
+  /* 回首页。优先点导航栏（人类行为）；点不到就直接改地址兜底。
+   * 发现页加载失败时导航栏可能也是空的，只靠点击会卡在原地。 */
+  async function goHome() {
+    const ok = await clickNav(SEL.navHome, "首页");
+    if (ok && onHome()) return true;
+    if (onHome()) return true;
+    await logAct("导航栏回不到首页 → 直接跳转 /home", "nav");
+    location.assign("/home");
+    await sleep(rnd(2500, 4000) * SPD);
+    return onHome();
+  }
   const gotoNotifications = () => clickNav(SEL.navNotif, "通知页", SEL.cell);
   const onHome = () => location.pathname === "/home";
   const onNotif = () => location.pathname === "/notifications";
@@ -1429,7 +1439,18 @@
         ctx.phase = "home"; await goHome(); saveCtx(ctx); return;
       }
     }
-    await waitContent(1, 25000, "发现页");
+    /* 等发现页内容。超时说明这一页没加载出来（慢网/被限流/跳走了），
+     * 用户要求：**这种情况直接重新点主页**，不要在空页面上继续找用户。
+     * 之前超时后仍往下走，结果在空页面上读到 0 个候选，白等 25 秒还留下脏状态。 */
+    const loaded = await waitContent(1, 25000, "发现页");
+    if (!loaded) {
+      await logAct("发现页没加载出来 → 重新点主页，回时间线继续刷", "nav");
+      ctx.phase = "home";
+      await goHome();
+      await waitContent(1, 20000, "主页");
+      saveCtx(ctx);
+      return;
+    }
     const me = (whoami() || "").toLowerCase();
     const s = await storeGet();
 
