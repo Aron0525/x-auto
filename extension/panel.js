@@ -1,4 +1,4 @@
-/* panel.js —— 侧边栏控制面板 */
+﻿/* panel.js —— 侧边栏控制面板 */
 
 const $ = (id) => document.getElementById(id);
 const FIELDS = ["session_minutes", "typing_ms", "like_prob", "comment_prob",
@@ -45,7 +45,7 @@ async function saveSettings() {
     if (f === "llm_key" && !raw.trim()) continue;
     s[f] = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob"].includes(f)
       ? Math.max(0, Math.min(1, parseFloat(raw) || 0))
-      : f === "comment_target_len" ? Math.max(5, Math.min(20, parseInt(raw, 10) || 13))
+      : f === "comment_target_len" ? Math.max(5, Math.min(40, parseInt(raw, 10) || 13))
       : raw;
   }
   s.notif_enabled = $("notif_enabled").checked;

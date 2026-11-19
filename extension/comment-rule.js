@@ -1,4 +1,4 @@
-/* comment-rule.js —— 评论规则独立窗口的逻辑
+﻿/* comment-rule.js —— 评论规则独立窗口的逻辑
  *
  * 存的位置和主控制台一致：chrome.storage.local 的 xa_settings
  * （提示词/模板也在里面，所以 content.js 的 getBeh 直接能读到）。
@@ -109,7 +109,7 @@ function shortPhrase(text, limit) {
 }
 
 function renderPreview() {
-  const target = Math.max(5, Math.min(20, parseInt($("comment_target_len").value, 10) || 13));
+  const target = Math.max(5, Math.min(40, parseInt($("comment_target_len").value, 10) || 13));
   const lo = Math.max(4, target - 5), hi = Math.min(20, target + 5);
   const post = $("samplePost").value || "";
   const list = tplList();

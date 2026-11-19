@@ -158,11 +158,15 @@ globalThis.SOP = (() => {
    *   "sop"（原 SOP 规则）：长度门槛 + 质量分 + 接住原帖具体点 + 禁空话等全套校验。
    * 两种模式下「广告/互关/骂战」这类扫读级垃圾帖都不碰（SOP.shouldSkip 前置）。
    */
+  /* 评论字数（用户规则）：
+   *   目标 13 字左右，实际在 ±5 内随机浮动。
+   *   **不设硬上限** —— 用户明确要求「目标十几个字，但不能在一句话没讲完就强制截断，
+   *   只让模型自己去生成」。所以 cap 只是「建议最大值」，超出不拦截，
+   *   只要句子完整、话说完了就放行。 */
   function commentLength(beh) {
-    // 用户规则：目标 13 字左右，随机浮动；硬上限 20 字
-    const target = Math.max(5, Math.min(20, beh?.comment_target_len ?? 13));
-    const lo = Math.max(4, target - 5), hi = Math.min(20, target + 5);
-    return { lo, hi, cap: 20 };
+    const target = Math.max(5, Math.min(40, beh?.comment_target_len ?? 13));
+    const lo = Math.max(4, target - 5), hi = target + 5;
+    return { lo, hi, cap: Infinity, soft: hi };   // cap=Infinity：不硬截
   }
 
   function shouldComment(tw, beh) {
@@ -220,15 +224,20 @@ globalThis.SOP = (() => {
     if (PURE_SYMBOL.test(c)) return [false, "纯表情/纯符号"];
 
     if (isMineMode(beh)) {
-      // 我的规则：只硬卡「不超过 20 字」，内容要回应帖子 + 表达观点
-      const { cap } = commentLength(beh);
-      if (c.length > cap) return [false, `超过 ${cap} 字（当前 ${c.length} 字）`];
+      /* 我的规则：**不设字数硬上限**（用户要求：目标十几个字即可，但不能强制截断，
+       * 一句话要让它讲完）。这里只挡真正不能发的东西：
+       *   · 空的、纯表情
+       *   · 太短到说不出观点（<4 字）
+       *   · 互动交换（互关/求关注 —— 会被判定刷量）
+       *   · 编造亲历
+       * 字数目标交给模型自己把握，不做机械拦截。 */
       if (c.length < 4) return [false, "太短，表达不出观点"];
-      // 仍然保留红线：互动交换 / 广告引流（这类发出去会被限流甚至封号）
       if (["互关", "回关", "互赞", "关注我", "求关注"].some((k) => c.includes(k)))
         return [false, "涉及互动交换（会被平台判定刷量）"];
       for (const bad of FABRICATION) if (c.includes(bad)) return [false, `疑似编造亲历：${bad}`];
-      return [true, `通过（我的规则 · ${c.length}/${cap} 字）`];
+      const { soft } = commentLength(beh);
+      const note = c.length > soft ? ` · 略长于目标 ${soft} 字但句子完整，放行` : "";
+      return [true, `通过（我的规则 · ${c.length} 字${note}）`];
     }
 
     // 原 SOP 规则（保留）：全套严格校验

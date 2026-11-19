@@ -154,8 +154,15 @@ globalThis.COMMENT_GEN = (() => {
       if (p) return p;
     }
 
-    // ③ 都不合适 → 返回空。调用方会改用「不带短语的纯观点句」，
-    //    宁可少一点针对性，也不发断句。
+    // ③ 都超长 → 取「最短的完整分段」，允许整句略超目标字数。
+    //    用户明确要求：宁可多写几个字把话说完整，也不要硬截断。
+    //    仍然只取**完整**的逗号分段，不会切出「半导体周期见」这种半句。
+    for (const { c } of scored) {
+      const parts = c.split(/[，,、；;]/).map((s) => s.trim()).filter((s) => s.length >= MIN);
+      if (parts.length) return parts.reduce((a, b) => (b.length < a.length ? b : a));
+    }
+
+    // ④ 实在切不出分段 → 返回空，调用方用纯观点句
     return "";
   }
 
@@ -210,7 +217,7 @@ globalThis.COMMENT_GEN = (() => {
   /* 默认提示词（对齐用户给的 CommentPrompts.kt 思路，但字数按本插件规则压到 ≤20）。
    * 核心：每条评论必须做两件事 —— ① 对内容有具体回应，不能是放之四海皆准的空话；
    *       ② 表达自己的观点，不是把原文换个说法复述。
-   * 占位符：{len} 目标字数、{lo}/{hi} 区间、{cap} 硬上限、{tone} 语气、{post} 原帖正文 */
+   * 占位符：{len} 目标字数、{lo}/{hi} 建议区间、{tone} 语气、{post} 原帖正文 */
   const DEFAULT_MINE_PROMPT = `你是一个评论回复助手，负责根据帖子的内容写出可以公开发表的评论。
 
 每条评论必须做两件事：
@@ -220,7 +227,9 @@ globalThis.COMMENT_GEN = (() => {
 
 要求：
 - 语言跟随原文（原文中文就用中文）。
-- 每条不超过 {cap} 个字，{len} 字左右最合适，口语一点，像真人随口接一句。
+- 长度大约 {len} 个字是理想状态，但**这是目标不是硬性上限**：如果话说完了还差一点就停，
+  如果非要多写几个字才能把这句讲完整，那就写完整——**宁可用二十来个字把意思说透，
+  也不要为了凑字数把一句话砍断。**
 - 只输出这一句评论本身，不要引号、不要解释、不要分点。
 - 不要客套话，不要堆表情，不要加话题标签（#），不要 @ 人，不要贴链接。
 - 不要编造数据或亲历（别说"我测过""我朋友在做"这类没发生的事）。
@@ -250,7 +259,7 @@ globalThis.COMMENT_GEN = (() => {
   let MINE_TEMPLATES = DEFAULT_MINE_TEMPLATES.slice();
 
   /* 面板改过的提示词/模板灌进来。空值 = 用默认。 */
-  // 占位符替换（提示词里可用 {len} {lo} {hi} {cap} {tone} {post}）
+  // 占位符替换（提示词里可用 {len} {lo} {hi} {tone} {post}）
   function fill(tpl, vars) {
     let out = String(tpl || "");
     for (const [k, v] of Object.entries(vars)) out = out.split("{" + k + "}").join(String(v));
@@ -272,28 +281,25 @@ globalThis.COMMENT_GEN = (() => {
    *   改成：短语按「有意义的长度」取（4~10 字，取完整词块），
    *         再挑一条「短语 + 模板固定字数 ≤ 上限」的模板来装它。 */
   function mineTemplate(post, len) {
-    const { cap } = SOP.commentLength({ comment_target_len: len });
     // 通知回复场景优先用「他说的话」当短语来源，其次才是正文
     const src = post.ctxReply || post.text || "";
     const order = MINE_TEMPLATES.map((_, i) => i).sort(() => Math.random() - 0.5);
 
-    // 短语目标：整句落 ~len，所以短语大致取 len - 模板固定字数，但不低于 4、不高于 10
+    /* **不再因为字数超标就丢弃句子**（用户要求：目标十几个字即可，
+     * 不能为了凑字数把一句话讲一半就砍掉）。短语长度只作为「偏好」，
+     * 取到多长就用多长，拼出来的句子即使超过目标字数也照样用。 */
     const tryOne = (tplIdx, phraseLen) => {
       const tpl = MINE_TEMPLATES[tplIdx];
       const phrase = shortPhrase(src, phraseLen);
       if (!phrase) return null;
-      const text = tpl.replaceAll("{p}", phrase);
-      if (text.length > cap) return null;
-      return text;
+      return tpl.replaceAll("{p}", phrase);
     };
 
     for (const i of order) {
       const tpl = MINE_TEMPLATES[i];
       const fixed = tpl.replace("{p}", "").length;
-      // 先试「刚好凑到目标字数」的短语长度，再放宽到装得下的最大长度
       const ideal = Math.max(4, Math.min(10, len - fixed));
-      const roomy = Math.max(4, Math.min(12, cap - fixed - 1));
-      for (const pl of [ideal, roomy, Math.max(4, ideal - 2)]) {
+      for (const pl of [ideal, Math.max(4, ideal - 2), Math.max(4, ideal + 2)]) {
         const t = tryOne(i, pl);
         if (t) { lastMine = i; return t; }
       }
@@ -311,7 +317,7 @@ globalThis.COMMENT_GEN = (() => {
     "这判断我认同，但风险也要说。",
   ];
 
-  // 占位符替换（提示词里可用 {len} {lo} {hi} {cap} {tone} {post}）
+  // 占位符替换（提示词里可用 {len} {lo} {hi} {tone} {post}）
   function fill(tpl, vars) {
     let out = String(tpl || "");
     for (const [k, v] of Object.entries(vars)) out = out.split("{" + k + "}").join(String(v));
@@ -412,7 +418,7 @@ globalThis.COMMENT_GEN = (() => {
   /* 我的规则：短评生成。LLM 优先生成，失败/不合格退回短句模板。
    * 长度：目标 len（默认 13，随机 ±5 内浮动），硬上限 20 字。 */
   async function generateMine(post, body, beh, llmCfg) {
-    const { lo, hi, cap } = SOP.commentLength(beh);
+    const { lo, hi } = SOP.commentLength(beh);
     const len = lo + Math.floor(Math.random() * (hi - lo + 1));   // 每次随机一个目标长度
     const tryAccept = (raw) => {
       const t = clean(raw).replace(/[。！？!?]+$/, (m) => m);
@@ -424,7 +430,7 @@ globalThis.COMMENT_GEN = (() => {
     if (llmCfg && llmCfg.apiKey && llmCfg.baseUrl && llmCfg.model) {
       const toneCn = { friendly: "随和", professional: "专业", humorous: "幽默",
                        curious: "好奇", supportive: "共情", sharp: "直接" }[beh?.tone] || "随和";
-      const system = fill(MINE_SYSTEM, { len, lo, hi, cap, tone: toneCn, post: body.slice(0, 800) });
+      const system = fill(MINE_SYSTEM, { len, lo, hi, tone: toneCn, post: body.slice(0, 800) });
 
       // 已有回复：既包括页面上别人写的，也包括我自己之前发过的（防重复的关键）
       const others = (post.replies || []).map((r) => String(r).trim()).filter(Boolean).slice(0, 8);
@@ -443,7 +449,7 @@ globalThis.COMMENT_GEN = (() => {
       if (others.length) parts.push(`已有回复（供参考，不要重复别人说过的）：\n- ${others.join("\n- ")}`);
       if (mineBefore.length)
         parts.push(`我之前在这位作者下发过的评论（绝对不要再说一遍，换个角度）：\n- ${mineBefore.join("\n- ")}`);
-      parts.push(`请给出 1 条评论，${lo}~${hi} 个字（不超过 ${cap} 字），语气${toneCn}。`);
+      parts.push(`请给出 1 条评论，大约 ${len} 个字（${lo}~${hi} 是理想区间，多几个字没关系，但句子必须完整），语气${toneCn}。`);
 
       let feedback = "";
       for (const attempt of [1, 2, 3]) {
@@ -463,7 +469,7 @@ globalThis.COMMENT_GEN = (() => {
           }
           return { text: t, source: "llm", model: llmCfg.model, len: t.length, target: len, attempts: attempt };
         }
-        feedback = `\n\n【上一版不合格】字数或内容不符合要求（要求 ${lo}~${hi} 字，不超过 ${cap} 字），请重写一句。`;
+        feedback = `\n\n【上一版不合格】内容不符合要求（大约 ${len} 字，句子要完整通顺），请重写一句。`;
       }
       const t = tryTemplates(post, len, beh);
       return { text: t || "", source: "template", target: len,

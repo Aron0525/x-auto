@@ -1,4 +1,4 @@
-/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
+﻿/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
 
 const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "typing_ms", "follow_per_session",
@@ -60,7 +60,7 @@ async function loadSettings() {
   if (sum) {
     sum.textContent = s.comment_rule === "sop"
       ? "原 SOP 规则（严格校验）"
-      : `我的规则 · ${s.comment_target_len ?? 13} 字左右 · 上限 20`;
+      : `我的规则 · 目标 ${s.comment_target_len ?? 13} 字左右（无硬上限）`;
   }
 }
 
@@ -110,7 +110,7 @@ async function saveSettings() {
     if (f === "llm_key" && !el.value.trim()) continue;
     if (PROB.includes(f)) s[f] = Math.max(0, Math.min(1, parseFloat(el.value) || 0));
     else if (f === "speed") s[f] = Math.max(0.5, Math.min(3, parseFloat(el.value) || 1.5));
-    else if (f === "comment_target_len") s[f] = Math.max(5, Math.min(20, parseInt(el.value, 10) || 13));
+    else if (f === "comment_target_len") s[f] = Math.max(5, Math.min(40, parseInt(el.value, 10) || 13));
     else if (NUM.includes(f)) s[f] = Math.max(0, parseInt(el.value, 10) || 0);
     else s[f] = el.value.trim();
   }

@@ -100,12 +100,15 @@
 
   <div class="card">
     <h2>字数与长度</h2>
-    <p class="desc">我的规则下生效。实际每次都在区间内随机，不是写死一个数。</p>
+    <p class="desc">我的规则下生效。</p>
+    <div class="tip warn">
+      <b>没有硬上限。</b>目标字数只是「理想值」：程序会让模型瞄准这个长度写，
+      但如果一句话没讲完，<b>允许写多几个字把话说完</b>，不会强行截断。
+      模板兜底也一样——取到多长的短语就用多长，不为了凑字数把句子砍断。
+    </div>
     <div class="row"><label>目标字数</label>
-      <input type="number" id="comment_target_len" min="5" max="20">
-      <span class="hint">默认 13；实际在 ±5 内随机</span></div>
-    <div class="row"><label>硬上限</label>
-      <span class="hint" style="color:#e7e9ea">20 字（固定，超过直接判定不合格）</span></div>
+      <input type="number" id="comment_target_len" min="5" max="40">
+      <span class="hint">默认 13；每次都随机浮动，这是目标不是上限</span></div>
     <div class="row"><label>长度档</label>
       <select id="style">
         <option value="short">短（10~25字）</option>
@@ -118,6 +121,14 @@
   <div class="card">
     <h2>语气与风格</h2>
     <p class="desc">影响生成出来的评论口吻。</p>
+    <div class="tip">
+      <b>「提示词」和「语气」是什么关系？</b><br>
+      只有 <b>一套提示词</b>。语气不是另一份提示词，而是<b>填进提示词里的一个空位</b>：<br>
+      你在提示词里写 <code>{tone}</code>，程序就把下面选的语气描述替换到那个位置。<br>
+      比如选了「幽默」，<code>{tone}</code> 就变成「幽默（可自嘲不刻薄）」再发给模型。<br>
+      <b>注意</b>：如果你把提示词改写成不带 <code>{tone}</code> 的版本，语气选择就不会生效了
+      —— 要么保留 <code>{tone}</code> 占位符，要么把语气要求直接写死在提示词正文里。
+    </div>
     <div class="row"><label>语气</label>
       <select id="tone">
         <option value="friendly">随和（像朋友随口接一句）</option>
