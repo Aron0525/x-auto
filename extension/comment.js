@@ -214,26 +214,26 @@ globalThis.COMMENT_GEN = (() => {
    * 用户要求：什么帖子都能评、不超 20 字、最好 13 字左右且随机、内容 = 回应帖子 + 观点。
    * 这里给 LLM 一套极简指令，模板兜底也换成短句池（不再是 SOP 那套长模板）。 */
 
-  /* 默认提示词（对齐用户给的 CommentPrompts.kt 思路，但字数按本插件规则压到 ≤20）。
-   * 核心：每条评论必须做两件事 —— ① 对内容有具体回应，不能是放之四海皆准的空话；
-   *       ② 表达自己的观点，不是把原文换个说法复述。
+  /* 默认提示词（2026-11-18 重写）。
+   * 起因：正式号把「即时通讯回复助手」的提示词直接搬来当评论提示词，
+   * 模型以为在跟人私聊，于是顺着对话逻辑复述对方的话
+   * （作者说「我上架了」，它也回「我上架了」）。
+   * 结构沿用那段提示词的简洁风格，但**场景必须说清**：
+   *   · 你是浏览帖子的用户，不是对话的另一方
+   *   · 帖子作者是别人，你是在评论他写的内容
+   *   · 绝不能复述作者的话、不能说自己做了他描述的事
    * 占位符：{len} 目标字数、{lo}/{hi} 建议区间、{tone} 语气、{post} 原帖正文 */
-  const DEFAULT_MINE_PROMPT = `你是一个评论回复助手，负责根据帖子的内容写出可以公开发表的评论。
+  const DEFAULT_MINE_PROMPT = `你是一个在 X（推特）上浏览帖子的普通用户，只输出 1 条公开评论。
 
-每条评论必须做两件事：
-第一，对帖子的具体内容有回应 —— 要指向帖子里真实提到的那个东西（说了什么、做了什么、遇到什么问题），
-不是"很有道理""值得思考"这种放到任何帖子下面都成立的话。
-第二，表达你自己的观点 —— 可以是认同并补充、也可以是保留意见，但不能只是把原文换个说法复述一遍。
+帖子作者是别人，你是评论者，针对帖子内容发表看法：可以认同并补充、可以保留意见、可以说出你的判断。
 
-要求：
-- 语言跟随原文（原文中文就用中文）。
-- 长度大约 {len} 个字是理想状态，但**这是目标不是硬性上限**：如果话说完了还差一点就停，
-  如果非要多写几个字才能把这句讲完整，那就写完整——**宁可用二十来个字把意思说透，
-  也不要为了凑字数把一句话砍断。**
-- 只输出这一句评论本身，不要引号、不要解释、不要分点。
-- 不要客套话，不要堆表情，不要加话题标签（#），不要 @ 人，不要贴链接。
-- 不要编造数据或亲历（别说"我测过""我朋友在做"这类没发生的事）。
-- 不阴阳怪气、不骂人、不引战、不评价作者本人。
+绝不能复述作者的话，也不能说自己做了帖子里描述的事（作者说他上架了产品，你不能说你也上架了——那是他的事，不是你的）。
+
+回复语言跟随帖子：帖子用英文就用自然英文，帖子用中文就用中文。
+
+长度大约 {len} 字最理想，但不是硬上限，话说完整优先，口语自然，像真人随手评论。
+
+不要解释、不要客套、不加话题标签、不@人、不贴链接、不编造亲身经历，直接输出这句评论本身。
 
 语气：{tone}`;
 
@@ -257,6 +257,42 @@ globalThis.COMMENT_GEN = (() => {
   // 运行时使用的池子（可被面板覆盖）
   let MINE_SYSTEM = DEFAULT_MINE_PROMPT;
   let MINE_TEMPLATES = DEFAULT_MINE_TEMPLATES.slice();
+
+  /* 复述/角色错位检测（用户踩过的真实坑：作者说「我把它上架了」，评论也回「我把它上架了」）。
+   * 分两层，因为单纯字面匹配挡不住**改写式复述**：
+   *   ① 字面：评论含原帖 8 字以上连续片段 → 复述
+   *   ② 语义：评论以「我」+ 动词开头，且该动词/动作在原帖里是**作者**做的
+   *      （原帖出现「我…上架」「把它上架」这类第一人称陈述）→ 把作者经历据为己有
+   */
+  function echoesAuthor(comment, post) {
+    const c0 = String(comment || "");
+    const c = c0.replace(/\s/g, "");
+    const src = String((post && (post.ctxReply || post.text)) || "").replace(/\s/g, "");
+    if (!c || !src) return false;
+
+    // ① 字面：8 字连续片段
+    if (src.length >= 8) {
+      const WIN = 8;
+      for (let i = 0; i + WIN <= src.length; i++) {
+        if (c.includes(src.slice(i, i + WIN))) return true;
+      }
+    }
+
+    // ② 语义：原帖里「我/把它 + 动词」，评论里也用同样动词说「我…」
+    //    抓原帖中的动作词（上架、发布、做了、写完、跑通…常见动作）
+    const ACTIONS = ["上架", "发布", "上线", "开发", "做了", "做完", "写完", "跑通",
+                     "搭建", "注册", "申请", "注册了", "辞职", "搬进", "预约", "赚到",
+                     "学了", "开始做", "转型", "创业", "开了", "买了", "试了"];
+    for (const act of ACTIONS) {
+      if (!src.includes(act)) continue;                    // 原帖没提这个动作
+      // 原帖里这个动作是不是「作者自己做的」：动作前面出现 我/它/把它/已经
+      if (!new RegExp(`(我|把它|它|已经|刚|终于)[^。！？]{0,6}${act}`).test(src)) continue;
+      // 评论里也以「我」为主语说了这个动作 → 角色错位
+      if (new RegExp(`我[^。！？]{0,4}${act}`).test(c)) return true;
+    }
+
+    return false;
+  }
 
   /* 面板改过的提示词/模板灌进来。空值 = 用默认。 */
   // 占位符替换（提示词里可用 {len} {lo} {hi} {tone} {post}）
@@ -424,7 +460,10 @@ globalThis.COMMENT_GEN = (() => {
       const t = clean(raw).replace(/[。！？!?]+$/, (m) => m);
       if (!t) return null;
       const [ok] = SOP.validateComment(t, post, beh);
-      return ok ? t : null;
+      if (!ok) return null;
+      // 【硬拦截】复述作者的话 = 身份错位，直接判不合格
+      if (echoesAuthor(t, post)) return null;
+      return t;
     };
 
     if (llmCfg && llmCfg.apiKey && llmCfg.baseUrl && llmCfg.model) {
@@ -437,19 +476,20 @@ globalThis.COMMENT_GEN = (() => {
       const mineBefore = (post.myReplies || []).map((r) => String(r).trim()).filter(Boolean).slice(0, 5);
 
       const parts = [];
-      parts.push(`作者：@${post.handle || post.author || "unknown"}`);
+      parts.push(`帖子作者：@${post.handle || post.author || "unknown"}`);
       // 通知回复场景：给他回复我的那条帖子 → 必须结合「我的原帖 + 他说的话」
       if (post.ctxReply) {
-        if (post.ctxMyPost) parts.push(`我的原帖（上下文，这是我之前说的）：\n${String(post.ctxMyPost).slice(0, 500)}`);
-        parts.push(`对方回复我的话（这是我要回应的内容）：\n${String(post.ctxReply).slice(0, 500)}`);
-        parts.push(`请针对对方的回复写 1 条**对话式**回应：先接住他说的具体点，再表明我的态度或补充。`);
+        if (post.ctxMyPost) parts.push(`我的原帖（我先前说的，作为上下文）：\n${String(post.ctxMyPost).slice(0, 500)}`);
+        parts.push(`作者对我的回复（我要评论的是他这句话）：\n${String(post.ctxReply).slice(0, 500)}`);
+        parts.push(`请针对他这句话写 1 条回应：接住他说到的点，再表明我的态度或补充。注意主语是我，不是他。`);
       } else {
-        parts.push(`主内容：\n${body.slice(0, 800)}`);
+        parts.push(`作者发的帖子（我要评论的内容，不是我的话）：\n${body.slice(0, 800)}`);
+        parts.push(`请针对作者这个帖子写 1 条评论。用你自己的视角说话；作者做了什么事、有什么观点，不要搬到你自己身上。`);
       }
       if (others.length) parts.push(`已有回复（供参考，不要重复别人说过的）：\n- ${others.join("\n- ")}`);
       if (mineBefore.length)
         parts.push(`我之前在这位作者下发过的评论（绝对不要再说一遍，换个角度）：\n- ${mineBefore.join("\n- ")}`);
-      parts.push(`请给出 1 条评论，大约 ${len} 个字（${lo}~${hi} 是理想区间，多几个字没关系，但句子必须完整），语气${toneCn}。`);
+      parts.push(`要求：大约 ${len} 个字（${lo}~${hi} 是理想区间，多几个字没关系，但句子必须完整），语气${toneCn}。`);
 
       let feedback = "";
       for (const attempt of [1, 2, 3]) {
@@ -460,14 +500,24 @@ globalThis.COMMENT_GEN = (() => {
           });
         } catch (e) { raw = ""; }
         if (!raw || raw.__error) break;
-        const t = tryAccept(raw);
-        if (t) {
-          // 与我历史发过的评论重复 → 换角度重写
-          if (isDuplicate(t, post, beh)) {
-            feedback = `\n\n【这一版和我以前发过的太像了】请换一个完全不同的角度重写。`;
+
+        const cleaned = clean(raw).replace(/[。！？!?]+$/, (m) => m);
+        if (cleaned) {
+          // ① 先单独判复述——给出针对性的重写指令，比笼统说"不合格"有效得多
+          if (echoesAuthor(cleaned, post)) {
+            feedback = `\n\n【上一版的问题】你复述了作者说过的话（"${cleaned.slice(0, 30)}"）。` +
+                       `记住：作者是你评论的对象，他做的事不是你的。请用你自己的视角重新写一句，` +
+                       `不要再出现他原话里的表述。`;
             continue;
           }
-          return { text: t, source: "llm", model: llmCfg.model, len: t.length, target: len, attempts: attempt };
+          const t = tryAccept(cleaned);
+          if (t) {
+            if (isDuplicate(t, post, beh)) {
+              feedback = `\n\n【这一版和我以前发过的太像了】请换一个完全不同的角度重写。`;
+              continue;
+            }
+            return { text: t, source: "llm", model: llmCfg.model, len: t.length, target: len, attempts: attempt };
+          }
         }
         feedback = `\n\n【上一版不合格】内容不符合要求（大约 ${len} 字，句子要完整通顺），请重写一句。`;
       }
