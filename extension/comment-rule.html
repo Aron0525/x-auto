@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
@@ -63,6 +63,11 @@
          border-radius: 6px; font-size: 13px; color: #d6f5e6; }
   .cmt.bad { background: #2a0f18; border-left-color: #f9158b; color: #f5c6d8; }
   button.mini { padding: 2px 8px; font-size: 11px; border-radius: 6px; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
+           margin-left: 4px; vertical-align: middle; }
+  .badge.good { background: #0f3d2a; color: #4ade80; border: 1px solid #1d9a6c; }
+  .badge.ok { background: #1c2b3a; color: #60a5fa; border: 1px solid #2563a8; }
+  .badge.bad { background: #3d0f1d; color: #fb7185; border: 1px solid #9a1d43; }
   .tip { background: #1c2b3a; border-left: 3px solid #1d9bf0; border-radius: 6px;
          padding: 9px 12px; font-size: 12px; color: #aab8c2; margin: 10px 0; }
   .tip.warn { background: #2b2510; border-left-color: #ffd400; }
@@ -152,6 +157,36 @@
   </div>
 
   <div class="card">
+    <h2>发送前审核（不合格直接跳过）</h2>
+    <p class="desc">
+      每条评论<b>生成后、发送前</b>都会被打一次分。分数不到及格线就跳过这条，不发出去。
+    </p>
+    <div class="row"><label>开启审核</label>
+      <input type="checkbox" id="review_enabled">
+      <span class="hint">关掉就是生成什么发什么（不建议）</span></div>
+    <div class="row"><label>及格线</label>
+      <input type="number" id="review_threshold" min="0" max="100" step="5">
+      <span class="hint">默认 60。调高更严格，调低更宽松</span></div>
+    <div class="row"><label>额外禁用词</label>
+      <input type="text" id="review_banned" placeholder="用逗号分隔，例如：其实,说白了">
+      <span class="hint">内置已禁直角引号「」、议论文腔、引流词</span></div>
+
+    <div class="tip">
+      <b>评分怎么算（满分 100）</b><br>
+      · <b>观点强度 30 分</b>：有没有判断、因果、条件、取舍。只说「说得对」「收藏了」→ 5 分<br>
+      · <b>与帖相关度 25 分</b>：是否接住帖子里的具体内容，而不是放哪都能用<br>
+      · <b>人味 20 分</b>：有没有 AI 腔（"综上所述"）、有没有编造亲历<br>
+      · <b>长度完整度 15 分</b>：太短没信息，太长像论文，结尾不能是逗号或悬空连接词<br>
+      · <b>复述原帖 扣 35</b>：把作者的话照搬回来说成自己的<br>
+      · <b>和老评论重复 扣 25~30</b>：和发过的、或给同一作者发过的太像
+    </div>
+    <div class="tip warn">
+      <b>一票否决</b>（不管多少分都不发）：含直角引号「」、议论文腔（综上所述/首先/其次）、
+      引流词（互关 / @ / # / 点击链接）、冒充 AI、纯符号表情、纯态度短句。
+    </div>
+  </div>
+
+  <div class="card">
     <h2>提示词（可保存多套，随时切换）</h2>
     <p class="desc">每套提示词是一个「人格/风格设定」。程序运行时只用<b>当前选中</b>的那一套。</p>
 
@@ -223,6 +258,7 @@
 
 <script src="sop.js"></script>
 <script src="comment.js"></script>
+<script src="review.js"></script>
 <script src="comment-rule.js"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-/* content.js —— 页面操作 + 会话状态机（Python 版 pages/x_twitter.py + tools/x_session.py 的移植）
+﻿/* content.js —— 页面操作 + 会话状态机（Python 版 pages/x_twitter.py + tools/x_session.py 的移植）
  *
  * 分工：
  *   · 本文件只碰 DOM：读帖、找元素、算坐标；所有「点击/打字/滚轮」经
@@ -1227,7 +1227,17 @@
     if (ctx.plan.doCmt && (await budgetLeft("reply", beh.limits.reply)) > 0) {
       const gen = await COMMENT_GEN.generate(await withAntiRepeat(post), beh, beh.llm);
       const text = (gen.text || "").trim();
-      if (text) {
+      /* 【发送前审核】用户要求：不合格就跳过，绝不发出去。
+       * 之前只有 validateComment 那几道粗筛，挡不住「只有态度没观点」「和帖子不搭」
+       * 这类质量问题。这里用 review.js 打总分，不过阈值就整条跳过。 */
+      const rev = text && beh.review_enabled !== false ? COMMENT_REVIEW.reviewComment(text, { text: post.text, ctxReply: post.ctxReply, myReplies: post.myReplies, scene: COMMENT_GEN.classifyPost(post.text || "") }, beh) : null;
+      if (text && rev && !rev.pass) {
+        await logAct(`评论不通过审核（${rev.score} 分 · ${rev.fatal}）→ 跳过这条，不发`, "skip");
+        for (const line of rev.reasons.slice(0, 3)) await logAct(`  · ${line}`, "skip");
+      } else if (text) {
+        if (rev && rev.score < 85) {
+          await logAct(`评论审核 ${rev.score} 分（${rev.grade}）→ 放行：${text}`, "judge");
+        }
         const r = await replyCurrent(text, beh);
         if (r.ok) {
           ctx.stats.commented++; await addEvent("reply");
@@ -1236,7 +1246,7 @@
           });
           acts.comment = text.slice(0, 120);
           noteComment(text);
-          await logAct(`✓ 评论 @${post.handle}：${text}（${text.length} 字）`, "cmt");
+          await logAct(`✓ 评论 @${post.handle}：${text}（${text.length} 字${rev ? ` · 审核 ${rev.score} 分` : ""}）`, "cmt");
           await sleep(writeGap(beh));   // 写操作间隔：真人不会连发
         } else {
           await logAct(`✗ 评论失败：${r.error}`);
@@ -1338,7 +1348,12 @@
         // 主页是重复评论的高发区：同一作者的多条帖子连着评，必须带同作者历史去重
         const gen = await COMMENT_GEN.generate(await withAntiRepeat(t), beh, beh.llm);
         const text = (gen.text || "").trim();
-        if (text) {
+        // 【发送前审核】不过关就跳过这篇，继续下一篇
+        const rev = text && beh.review_enabled !== false ? COMMENT_REVIEW.reviewComment(text,
+          { text: t.text, myReplies: t.myReplies, scene: COMMENT_GEN.classifyPost(t.text || "") }, beh) : null;
+        if (text && rev && !rev.pass) {
+          await logAct(`主页互动：评论不通过审核（${rev.score} 分 · ${rev.fatal}）→ 跳过`, "skip");
+        } else if (text) {
           const art = [...document.querySelectorAll(SEL.article)]
             .find((a) => (a.querySelector('a[href*="/status/"]') || { getAttribute: () => "" })
               .getAttribute("href").includes(t.id));
@@ -1717,7 +1732,12 @@
         { ...(await withAntiRepeat(post)), ctxMyPost: post.ctxMyPost, ctxReply: post.ctxReply },
         beh, beh.llm);
       const text = (gen.text || "").trim();
-      if (text) {
+      // 通知回复也是公开发言，同样要过审核
+      const rev = text && beh.review_enabled !== false ? COMMENT_REVIEW.reviewComment(text,
+        { text: post.ctxReply, ctxReply: post.ctxReply, myReplies: post.myReplies, scene: COMMENT_GEN.classifyPost(post.ctxReply || "") }, beh) : null;
+      if (text && rev && !rev.pass) {
+        await logAct(`回复不通过审核（${rev.score} 分 · ${rev.fatal}）→ 跳过`, "skip");
+      } else if (text) {
         const r = await replyCurrent(text, beh);
         if (r.ok) {
           ctx.stats.commented++; await addEvent("reply");
@@ -1726,7 +1746,7 @@
           });
           noteComment(text);
           await recordTweet(post, { comment: text.slice(0, 120), via: "notification" });
-          await logAct(`✓ 回复 @${post.handle || ctx.current.handle}：${text}（${text.length} 字）`, "cmt");
+          await logAct(`✓ 回复 @${post.handle || ctx.current.handle}：${text}（${text.length} 字${rev ? ` · 审核 ${rev.score} 分` : ""}）`, "cmt");
         } else {
           await logAct(`✗ 回复失败：${r.error}`, "fail");
         }

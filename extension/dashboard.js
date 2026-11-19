@@ -22,6 +22,8 @@ const DEFAULTS = {
   min_read_before_refresh: 12,
   follow_gap_min: 60, follow_gap_max: 180, follow_per_hour: 8,
   tone: "friendly", style: "normal", notif_enabled: true,
+  // 评论审核：不过关就跳过不发。60 分是「合格线」，低于它一律不发。
+  review_enabled: true, review_threshold: 60, review_banned: "",
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,
 };
@@ -50,6 +52,8 @@ async function loadSettings() {
   for (const f of FIELDS) if ($(f)) $(f).value = s[f] ?? "";
   // API 配置放在独立的 xa_llm 里，优先级高于 xa_settings（迁移旧值）
   const llm = d.xa_llm || {};
+  // 记住已存的 Key，用于收起状态下显示状态、以及留空时判断"保持原值"
+  window.__llmStoredKey = llm.apiKey || "";
   if (llm.apiKey) $("llm_key").value = llm.apiKey;
   if (llm.baseUrl) $("llm_base").value = llm.baseUrl;
   if (llm.model) $("llm_model").value = llm.model;
@@ -68,14 +72,32 @@ async function loadSettings() {
  * 密钥只存本地 chrome.storage.local，不上传任何服务器（除了发给模型接口本身）。 */
 function updateKeyState() {
   const el = $("keyState");
+  const badge = $("apiState");
+  const stored = window.__llmStoredKey || "";
+  const typed = ($("llm_key").value || "").trim();
+  const key = typed || stored;
+
+  // 收起时显示的一行状态
+  if (badge) {
+    if (key) {
+      const model = ($("llm_model").value || "").trim() || "deepseek-flash";
+      badge.innerHTML = `<span class="pill on">已配置</span> ${esc(model)}`;
+    } else {
+      badge.innerHTML = '<span class="pill off">未配置</span> 用模板兜底';
+    }
+  }
+
   if (!el) return;
-  const v = ($("llm_key").value || "").trim();
-  if (v) {
-    const mask = v.slice(0, 4) + "…" + v.slice(-4);
+  if (typed) {
+    const mask = typed.slice(0, 4) + "…" + typed.slice(-4);
     el.innerHTML = `<span class="pill on">已填写</span> <code>${esc(mask)}</code>` +
       '<span style="color:#71767b"> 点「保存 API 配置」写入本地；下次打开自动带出</span>';
+  } else if (stored) {
+    const mask = stored.slice(0, 4) + "…" + stored.slice(-4);
+    el.innerHTML = `<span class="pill on">已保存</span> <code>${esc(mask)}</code>` +
+      '<span style="color:#71767b"> 留空则保持这个密钥不变</span>';
   } else {
-    el.innerHTML = '<span class="pill off">未填写</span><span style="color:#71767b"> 不填也能跑，评论走短句模板兜底</span>';
+    el.innerHTML = '<span class="pill off">未填写</span><span style="color:#71767b"> 不填也能跑，评论走模板兜底</span>';
   }
 }
 
@@ -88,6 +110,7 @@ async function saveLlm() {
   const next = { ...cur, baseUrl, model };
   if (apiKey) next.apiKey = apiKey;   // 只有真填了才写，避免误清空
   await chrome.storage.local.set({ xa_llm: next });
+  window.__llmStoredKey = next.apiKey || "";
   updateKeyState();
   flash(apiKey ? "API 配置已保存到本地（下次自动带出）" : "已保存模型设置（密钥保持原值）", "on");
 }
@@ -96,9 +119,85 @@ async function clearLlm() {
   const cur = (await chrome.storage.local.get(["xa_llm"])).xa_llm || {};
   delete cur.apiKey;
   await chrome.storage.local.set({ xa_llm: cur });
+  window.__llmStoredKey = "";
   $("llm_key").value = "";
   updateKeyState();
   flash("已清除本地保存的 API Key", "warn");
+}
+
+/* 测试连通：实际发一条最短的请求，看能不能拿到回复。
+ * 检验四件事：密钥有效、Base URL 通、模型名存在、返回格式能解析。
+ * 常见的坑都能在这里暴露出来，不用等到跑会话才发现。 */
+async function testLlm() {
+  const box = $("testLlmResult");
+  const btn = $("testLlm");
+  const apiKey = ($("llm_key").value || "").trim() ||
+    ((await chrome.storage.local.get(["xa_llm"])).xa_llm || {}).apiKey || "";
+  const baseUrl = ($("llm_base").value || "").trim() || "https://api.deepseek.com/v1";
+  const model = ($("llm_model").value || "").trim() || "deepseek-flash";
+
+  const say = (html) => { box.innerHTML = html; };
+  if (!apiKey) {
+    say('<span style="color:#f9158b">✗ 还没填 API Key</span><br>' +
+        '<span style="color:#71767b">不填也能跑，评论会走模板兜底</span>');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "测试中…";
+  say('<span style="color:#71767b">正在请求模型，最多等 30 秒…</span>');
+
+  const t0 = Date.now();
+  let r = null, err = "";
+  try {
+    r = await chrome.runtime.sendMessage({
+      t: "llm",
+      system: "你是一个测试助手，只回复两个字。",
+      user: "请回复：收到",
+      cfg: { apiKey, baseUrl, model },
+    });
+  } catch (e) {
+    err = String(e && e.message || e);
+  }
+  const ms = Date.now() - t0;
+  btn.disabled = false;
+  btn.textContent = "测试连通";
+
+  // 分析结果，给出具体诊断而不是一句"失败"
+  if (err) {
+    say(`<span style="color:#f9158b">✗ 请求没发出去</span> · ${ms}ms<br>` +
+        `<span style="color:#71767b">${esc(err)}</span>`);
+    return;
+  }
+  if (r && r.__error) {
+    const e = String(r.__error);
+    let hint = "";
+    if (/401|unauthorized|invalid.*key|api key/i.test(e))
+      hint = "密钥不对，检查是否复制完整、有没有多余空格";
+    else if (/404|not found|model/i.test(e))
+      hint = "模型名可能不对，常见可用值：deepseek-chat、deepseek-flash";
+    else if (/429|rate limit|quota/i.test(e))
+      hint = "额度用完或请求太频繁，稍后再试或检查账户余额";
+    else if (/timeout|ETIMEDOUT|abort/i.test(e))
+      hint = "连接超时，检查网络或 Base URL 是否可访问";
+    else if (/ENOTFOUND|getaddrinfo|ECONNREFUSED/i.test(e))
+      hint = "域名解析失败或连不上，Base URL 可能写错了";
+    say(`<span style="color:#f9158b">✗ 模型返回错误</span> · ${ms}ms<br>` +
+        `<code style="font-size:11px">${esc(e.slice(0, 300))}</code>` +
+        (hint ? `<br><span style="color:#ffd400">可能原因：${esc(hint)}</span>` : ""));
+    return;
+  }
+  if (!r || !String(r).trim()) {
+    say(`<span style="color:#ffd400">⚠ 请求成功但返回是空的</span> · ${ms}ms<br>` +
+        `<span style="color:#71767b">接口通，但模型没吐内容。换个模型名试试。</span>`);
+    return;
+  }
+
+  const reply = String(r).trim().slice(0, 80);
+  say(`<span style="color:#00ba7c">✓ 连通正常</span> · ${ms}ms<br>` +
+      `<span style="color:#71767b">模型回复：</span><code>${esc(reply)}</code><br>` +
+      `<span style="color:#71767b">${esc(model)} @ ${esc(baseUrl)}</span>`);
+  updateKeyState();
 }
 
 async function saveSettings() {
@@ -502,8 +601,18 @@ $("openCommentRule").onclick = () => chrome.windows.create({
 });
 $("openCommentRule2").onclick = $("openCommentRule").onclick;
 $("saveLlm").onclick = saveLlm;
+$("testLlm").onclick = testLlm;
 $("clearLlm").onclick = clearLlm;
 $("llm_key").oninput = updateKeyState;
+
+/* API 配置默认收起：大部分时候不用管它，填过一次就不用再看。
+ * 收起时用一行字说明当前状态，需要改再展开。 */
+$("toggleApi").onclick = () => {
+  const body = $("apiBody");
+  const open = body.style.display === "none";
+  body.style.display = open ? "block" : "none";
+  $("toggleApi").textContent = open ? "收起" : "展开";
+};
 
 loadSettings();
 refresh();

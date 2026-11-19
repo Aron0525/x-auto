@@ -12,9 +12,10 @@
 const $ = (id) => document.getElementById(id);
 const FIELDS = ["comment_rule", "comment_prob", "comment_prob_cap", "dedup_comment",
                 "focus_keywords", "comment_target_len", "style", "tone",
-                "comment_templates"];
+                "comment_templates", "review_enabled", "review_threshold", "review_banned"];
 const PROB = ["comment_prob", "comment_prob_cap"];
-const NUM = ["comment_target_len"];
+const NUM = ["comment_target_len", "review_threshold"];
+const CHK = ["dedup_comment", "review_enabled"];
 
 const RULE_HINT = {
   mine: "当前：什么帖子都能评，句子完整优先，13 字左右随机",
@@ -108,6 +109,9 @@ async function load() {
   $("comment_target_len").value = s.comment_target_len ?? 13;
   $("style").value = s.style || "normal";
   $("tone").value = s.tone || "friendly";
+  $("review_enabled").checked = s.review_enabled !== false;
+  $("review_threshold").value = s.review_threshold ?? 60;
+  $("review_banned").value = s.review_banned || "";
 
   ensurePrompts(s);
   renderPromptSelect();
@@ -203,6 +207,15 @@ async function loadPosts() {
     ? "没读到保存的帖子，用的是内置样本" : `已读取 ${posts.length} 条真实帖子`;
 }
 
+// 审核用的行为参数（取界面当前值，未保存也能预览）
+function reviewBeh() {
+  return {
+    review_enabled: $("review_enabled") ? $("review_enabled").checked : true,
+    review_threshold: $("review_threshold") ? (parseInt($("review_threshold").value, 10) || 60) : 60,
+    review_banned: $("review_banned") ? $("review_banned").value : "",
+  };
+}
+
 function renderPosts(results) {
   const box = $("postList");
   if (!POSTS.length) {
@@ -211,10 +224,23 @@ function renderPosts(results) {
   }
   box.innerHTML = POSTS.map((p, i) => {
     const r = results[i];
-    const cmt = r === undefined ? "" :
-      r === null ? '<div class="cmt bad">生成失败</div>'
-      : !r ? '<div class="cmt bad">没有合格评论</div>'
-      : `<div class="cmt">→ ${escapeHtml(r)} <span class="num">${r.length} 字</span></div>`;
+    let cmt = "";
+    if (r === undefined) cmt = "";
+    else if (!r) cmt = '<div class="cmt bad">没有生成出合格评论</div>';
+    else {
+      // 直接显示审核分数，一眼看出这条会不会被拦
+      let badge = "";
+      let willBlock = false;
+      if (typeof COMMENT_REVIEW !== "undefined" && COMMENT_REVIEW) {
+        const rv = COMMENT_REVIEW.reviewComment(r, { text: p.text, scene: COMMENT_GEN.classifyPost(p.text || "") }, reviewBeh());
+        willBlock = !rv.pass;
+        const cls = rv.pass ? (rv.score >= 85 ? "good" : "ok") : "bad";
+        badge = `<span class="badge ${cls}">${rv.score} 分 · ${rv.pass ? rv.grade : "会被拦"}</span>`;
+        if (!rv.pass) badge += ` <span class="hint">${escapeHtml(rv.fatal)}</span>`;
+      }
+      cmt = `<div class="cmt${willBlock ? " bad" : ""}">→ ${escapeHtml(r)} ` +
+            `<span class="num">${r.length} 字</span> ${badge}</div>`;
+    }
     return `<div class="item">
       <div class="postHead">
         <span class="num">#${i + 1}${p.sample ? " · 内置样本" : p.custom ? " · 自己填的" : ""}</span>
@@ -317,7 +343,7 @@ async function save() {
     if (!el) continue;
     if (PROB.includes(f)) s[f] = Math.max(0, Math.min(1, parseFloat(el.value) || 0));
     else if (NUM.includes(f)) s[f] = Math.max(5, Math.min(40, parseInt(el.value, 10) || 13));
-    else if (f === "dedup_comment") s[f] = el.checked;
+    else if (CHK.includes(f)) s[f] = el.checked;
     else s[f] = el.value;
   }
 

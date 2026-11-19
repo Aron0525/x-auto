@@ -53,7 +53,7 @@ async function cdp(tabId, method, params) {
 // content.js 有 window.__XA_LOADED__ 守卫、sop/comment 用 globalThis 赋值，
 // 所以重复注入是幂等的，不会重跑会话。
 
-const CS_FILES = ["sop.js", "comment.js", "content.js"];
+const CS_FILES = ["sop.js", "comment.js", "review.js", "content.js"];
 
 async function injectTab(tabId) {
   try {

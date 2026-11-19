@@ -9,7 +9,7 @@
   "content_scripts": [
     {
       "matches": ["https://x.com/*"],
-      "js": ["sop.js", "comment.js", "content.js"],
+      "js": ["sop.js", "comment.js", "review.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

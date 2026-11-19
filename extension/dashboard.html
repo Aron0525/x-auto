@@ -109,6 +109,9 @@
   .sec-title { font-size: 12px; color: #1d9bf0; margin: 14px 0 4px; font-weight: 600;
                border-top: 1px solid #2f3336; padding-top: 12px; }
   .sec-title:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+  .cardHead { display: flex; justify-content: space-between; align-items: center; }
+  button.mini { padding: 3px 10px; font-size: 11px; border-radius: 8px; }
+  button:disabled { opacity: .55; cursor: default; }
 </style>
 </head>
 <body>
@@ -223,18 +226,28 @@
       <!-- 右列：LLM / 额度 / 视窗 / 维护 -->
       <div>
         <div class="card">
-          <h2>API 配置（存本地，不用每次填）</h2>
-          <div class="row"><label>API Key</label><input type="text" id="llm_key" placeholder="留空 = 用模板兜底">
+          <div class="cardHead">
+            <h2 style="margin:0">API 配置</h2>
+            <div style="display:flex;gap:6px;align-items:center">
+              <span id="apiState" style="font-size:11px;color:#71767b">未配置</span>
+              <button class="ghost mini" id="toggleApi">展开</button>
+            </div>
           </div>
-          <div class="row" id="keyState" style="font-size:11px"></div>
-          <div class="row"><label>Base URL</label><input type="text" id="llm_base"></div>
-          <div class="row"><label>模型</label><input type="text" id="llm_model"></div>
-          <div class="row" style="flex-wrap:wrap">
-            <button id="saveLlm">保存 API 配置</button>
-            <button id="clearLlm" class="ghost">清除 Key</button>
+          <div id="apiBody" style="display:none;margin-top:10px">
+            <div class="row"><label>API Key</label><input type="text" id="llm_key" placeholder="留空 = 用模板兜底">
+            </div>
+            <div class="row" id="keyState" style="font-size:11px"></div>
+            <div class="row"><label>Base URL</label><input type="text" id="llm_base"></div>
+            <div class="row"><label>模型</label><input type="text" id="llm_model"></div>
+            <div class="row" style="flex-wrap:wrap">
+              <button id="saveLlm">保存 API 配置</button>
+              <button id="testLlm" class="ghost">测试连通</button>
+              <button id="clearLlm" class="ghost">清除 Key</button>
+            </div>
+            <div id="testLlmResult" style="font-size:12px;margin-top:8px;line-height:1.6"></div>
+            <p style="color:#71767b;font-size:11px;margin:8px 0 0">
+              密钥只存在本机浏览器（<code>chrome.storage.local</code>），除了发给你填的模型接口外不发给任何地方。</p>
           </div>
-          <p style="color:#71767b;font-size:11px;margin:8px 0 0">
-            密钥只存在本机浏览器（<code>chrome.storage.local</code>），除了发给你填的模型接口外不发给任何地方。</p>
         </div>
         <div class="card">
           <h2>评论规则 <span style="color:#71767b;font-size:11px;font-weight:400">全部参数与提示词</span></h2>
