@@ -1,4 +1,4 @@
-﻿/* content.js —— 页面操作 + 会话状态机（Python 版 pages/x_twitter.py + tools/x_session.py 的移植）
+/* content.js —— 页面操作 + 会话状态机（Python 版 pages/x_twitter.py + tools/x_session.py 的移植）
  *
  * 分工：
  *   · 本文件只碰 DOM：读帖、找元素、算坐标；所有「点击/打字/滚轮」经
@@ -430,6 +430,11 @@
 
   // ---------------- 读取 ----------------
 
+  /* 读一屏帖子。
+   * 【自动存档】读到的帖子顺手写进本地 seenTweets —— 这样时间线、发现页、
+   * 作者主页、通知页读到的全部会留档，不用在每个调用点各写一遍。
+   * 写入是异步后台动作（不 await），不拖慢刷帖节奏。
+   * 定时任务里若没有 id（从发现页直接进主页那种）就不存。 */
   function readTweets(n = 12) {
     const arts = [...document.querySelectorAll(SEL.article)];
     const seen = new Set();
@@ -457,6 +462,7 @@
         social: norm((a.querySelector('[data-testid="socialContext"]') || {}).innerText).slice(0, 40),
       });
     }
+    if (out.length) saveSeenTweets(out);       // 自动存档
     return out;
   }
 
@@ -756,6 +762,38 @@
     });
   }
 
+  /* 把一屏读到的帖子批量存本地。
+   * 和 recordTweet 的区别：
+   *   recordTweet 记的是「这条我做了什么」（可能覆盖同一条），
+   *   这里记的是「我读到了什么」，按 id 去重，已存在就不重复写。
+   * 目的是积累素材：评论提示词效果测试、场景分类样本都靠这些真实帖子。 */
+  const SAVED_MAX = 3000;
+  function saveSeenTweets(list) {
+    const good = list.filter((t) => t && t.id &&
+      String(t.text || "").trim().length >= 10);
+    if (!good.length) return;
+    // 不 await：存档是后台动作，不能拖慢刷帖节奏
+    withStore((s) => {
+      s.seenTweets = s.seenTweets || {};
+      for (const t of good) {
+        const prev = s.seenTweets[t.id];
+        s.seenTweets[t.id] = {
+          at: prev ? prev.at : new Date().toLocaleString(),   // 首次读到的时间
+          seenAt: new Date().toLocaleString(),                // 最近一次读到
+          count: (prev ? prev.count || 1 : 0) + 1,            // 读到几次
+          id: t.id, href: t.href, handle: t.handle, author: t.author,
+          text: String(t.text || ""),
+        };
+      }
+      // 超过上限按最后读到时间淘汰最旧的
+      const keys = Object.keys(s.seenTweets);
+      if (keys.length > SAVED_MAX) {
+        keys.sort((a, b) => String(s.seenTweets[a].seenAt).localeCompare(String(s.seenTweets[b].seenAt)));
+        for (const k of keys.slice(0, keys.length - SAVED_MAX)) delete s.seenTweets[k];
+      }
+    }).catch(() => {});
+  }
+
   // ---------------- 会话状态机 ----------------
 
   const CTX_KEY = "xa_ctx";
@@ -1014,7 +1052,7 @@
       ctx.homeReads = 0;
       ctx.phase = "explore"; saveCtx(ctx); return;
     }
-    const tweets = readTweets(12);
+    const tweets = readTweets(12);   // readTweets 内部已自动存档到本地
     const fresh = tweets.filter((t) => !ctx.seen.includes(t.id));
     if (!fresh.length) {
       // 这一屏全是读过的帖子 = 要么滑进了旧帖区（新帖在上方），要么加载停滞。

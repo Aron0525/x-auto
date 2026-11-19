@@ -1,4 +1,4 @@
-﻿/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
+/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
 
 const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "session_min_min", "session_max_min", "typing_ms", "follow_per_session",
@@ -300,7 +300,10 @@ function renderRecords(s) {
     if (!q) return true;
     return ((r.handle || "") + " " + (r.author || "") + " " + (r.text || "")).toLowerCase().includes(q);
   }).slice(0, 400);
-  $("recCount").textContent = `共 ${(s.records || []).length} 条，显示 ${rows.length} 条`;
+  const seenN = s.seenTweets ? Object.keys(s.seenTweets).length : 0;
+  $("recCount").textContent =
+    `共 ${(s.records || []).length} 条处理记录，显示 ${rows.length} 条` +
+    (seenN ? ` · 本地已存 ${seenN} 条读到的帖子` : "");
   $("recBody").innerHTML = rows.map((r) => {
     const acts = r.actions || {};
     const badges = Object.keys(acts).map((k) => {

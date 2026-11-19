@@ -1,4 +1,4 @@
-﻿/* comment-rule.js —— 评论规则独立窗口的逻辑
+/* comment-rule.js —— 评论规则独立窗口的逻辑
  *
  * 存的位置和主控制台一致：chrome.storage.local 的 xa_settings
  * （提示词/模板也在里面，所以 content.js 的 getBeh 直接能读到）。
@@ -48,21 +48,27 @@ function defaultPreset() {
   return { id: "default", name: "内置默认（评论者视角）", body: COMMENT_GEN.DEFAULT_MINE_PROMPT };
 }
 
+/* 已知的旧版错误模板：聊天助手 / 附和型 / 写死字数的。
+ * 这些留着只会害人（评论结构高度雷同），打开窗口时直接清掉。 */
+const BAD_PROMPT_PAT = /即时通讯|聊天软件里发消息|回复助手|表达附和|认同他观点/;
+
 function ensurePrompts(s) {
-  const list = Array.isArray(s.comment_prompts) ? s.comment_prompts.filter((p) => p && p.body) : [];
+  let list = Array.isArray(s.comment_prompts) ? s.comment_prompts.filter((p) => p && p.body) : [];
+  // 清掉已知的坏模板（用户明确要求删掉旧即时通讯模板）
+  list = list.filter((p) => !BAD_PROMPT_PAT.test(String(p.body || "")));
+
   if (!list.length) {
-    // 迁移：老版本只存一个 comment_prompt 字符串
-    const old = (s.comment_prompt || "").trim();
-    PROMPTS = old && old !== COMMENT_GEN.DEFAULT_MINE_PROMPT.trim()
-      ? [defaultPreset(), { id: uid(), name: "我之前用的", body: old }]
-      : [defaultPreset()];
-    CURRENT = old && old !== COMMENT_GEN.DEFAULT_MINE_PROMPT.trim()
-      ? PROMPTS[PROMPTS.length - 1].id : "default";
+    /* 旧版本只存一个 comment_prompt 字符串。
+     * 现在不再把它搬进提示词列表——那正是评论雷同的根源。
+     * 只要不是内置默认，一律丢弃并回落到默认提示词。 */
+    PROMPTS = [defaultPreset()];
+    CURRENT = "default";
   } else {
     // 内置默认永远在列表里（可能被用户改名/改内容，就按存的来）
+    if (!list.some((p) => p.id === "default")) list.unshift(defaultPreset());
     PROMPTS = list;
     CURRENT = s.comment_prompt_id && list.some((p) => p.id === s.comment_prompt_id)
-      ? s.comment_prompt_id : list[0].id;
+      ? s.comment_prompt_id : "default";
   }
 }
 
@@ -115,6 +121,23 @@ async function load() {
 
   ensurePrompts(s);
   renderPromptSelect();
+
+  /* 立刻把清理结果写回存储：
+   * content.js 读的是 xa_settings.comment_prompt 这个遗留字段，
+   * 只改界面不写回的话，旧模板还会继续被使用。 */
+  {
+    const cur = PROMPTS.find((p) => p.id === CURRENT) || PROMPTS[0];
+    const body = cur.id === "default" ? "" : String(cur.body || "");
+    const stale = (s.comment_prompt || "").trim();
+    if (stale && stale !== body.trim()) {
+      const merged = { ...s, comment_prompts: PROMPTS, comment_prompt_id: CURRENT };
+      if (body) merged.comment_prompt = body; else delete merged.comment_prompt;
+      chrome.storage.local.set({ xa_settings: merged }).then(() => {
+        if (BAD_PROMPT_PAT.test(stale))
+          setStatus('<span class="pill off">已清除旧版聊天助手模板</span> 现在用内置默认提示词', "on");
+      }).catch(() => {});
+    }
+  }
 
   // 模板：留空表示用内置分场景池（推荐），所以空就显示空
   $("comment_templates").value = s.comment_templates || "";
@@ -182,9 +205,11 @@ async function loadPosts() {
   const box = $("postList");
   box.innerHTML = '<div class="item">读取中…</div>';
   let posts = [];
+  let total = 0;
   try {
     const r = await chrome.runtime.sendMessage({ t: "get_posts_sample", n: 5 });
     posts = (r && r.items) || [];
+    total = (r && r.total) || posts.length;
   } catch (e) { posts = []; }
 
   // 拿不到就退回内置样本，至少能试
@@ -204,7 +229,8 @@ async function loadPosts() {
   renderPosts([]);
   updatePostCount();
   $("genMsg").textContent = posts[0] && posts[0].sample
-    ? "没读到保存的帖子，用的是内置样本" : `已读取 ${posts.length} 条真实帖子`;
+    ? "没读到保存的帖子，用的是内置样本（开一轮会话就会自动积累）"
+    : `已读取 ${posts.length} 条真实帖子 · 本地共存了 ${total} 条`;
 }
 
 // 审核用的行为参数（取界面当前值，未保存也能预览）
