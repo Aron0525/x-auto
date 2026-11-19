@@ -237,26 +237,154 @@ globalThis.COMMENT_GEN = (() => {
 
 语气：{tone}`;
 
-  // 短句模板默认池：{p} 放原帖里的一句**完整短语**（已保证能独立读通）。
-  // 设计原则：模板固定字数尽量短，让 {p} 有空间；接读起来通顺，不像机器拼接。
-  const DEFAULT_MINE_TEMPLATES = [
-    "「{p}」，我也有同样感觉。",
-    "「{p}」这点我认同。",
-    "{p}，关键还是看执行。",
-    "「{p}」确实，代价不小。",
-    "{p}，我持保留态度。",
-    "「{p}」说得挺实在。",
-    "{p}，我更看重长期。",
-    "「{p}」我收藏了。",
-    "{p}，短期热闹长期未必。",
-    "「{p}」这个判断有道理。",
-    "{p}，不过落地最难。",
-    "「{p}」值得试试。",
-  ];
+  /* 短句模板池（2026-11-18 第三次重做）。
+   *
+   * 前两版都失败，教训记在这里：
+   *   第 1 版：「{p}我收藏了」→ 没有观点，纯情绪。
+   *   第 2 版：「{p}这个判断有道理，落地最难」→ 观点和帖子不匹配，
+   *            帖子在讲亏钱，评论说「落地最难」，牛头不对马嘴。
+   *
+   * 根因：**「抓一个短语 + 套一个固定观点」这个模型本身就是错的**。
+   * 短语是碎片（「只有 9 美元」「一年多来」），固定观点和它对不上，拼出来必然像机器。
+   *
+   * 第 3 版改成：**先判断帖子类型，再用该类型的整句**。
+   * 整句自带完整的「回应 + 观点」，不依赖脆弱的短语拼接。
+   * {p} 仍然可用，但只作为可选前缀，且优先选有信息量的片段。
+   */
+  const MINE_TEMPLATES_BY_SCENE = {
+    // 亏损/挫折/吐槽：先共情处境，再给一个不廉价的判断
+    vent: [
+      "这种回撤最难受的是把之前的利润全吐回去，心态比钱更难修。",
+      "一年定投抵不过几天行情，这事最磨人的地方就是让人怀疑方法本身。",
+      "赚的时候觉得是自己本事，亏回去才明白大部分是行情给的。",
+      "单看一个月的回撤没意义，扛不扛得住下一轮才是分水岭。",
+      "这种时候最忌讳临时改策略，往往改在最低点。",
+      "账面利润本来就不算数，落袋之前都是浮盈。",
+    ],
+    // 独立开发/创业经验：给具体的判断，不泛泛认同
+    build: [
+      "闷头改产品最舒服，因为不用面对没人用这件事，本质是逃避。",
+      "先抄一个验证过的需求不丢人，第一次创业活下去比原创重要。",
+      "分发比构建难这件事，做过一次的人不用解释，没做过的解释也没用。",
+      "真正的坑是做了半年才发现没人要，不是做不出来。",
+      "自己觉得好的东西和市场愿不愿意付费，中间隔着一条河。",
+      "早期最该做的事是把它扔出去被人嫌弃，而不是继续打磨。",
+    ],
+    // 行业/趋势观点：可以不同意，但要给理由
+    opinion: [
+      "构建成本降了，意味着稀缺的东西变成了注意力和信任。",
+      "工具再强也解决不了「做什么」这个问题，那还是人的判断。",
+      "门槛降低的结果通常是混战，最后活下来的是有渠道的。",
+      "这个判断我部分同意，但它忽略了时间这个变量。",
+      "趋势对不代表个体能吃到，位置比方向更重要。",
+    ],
+    // 成果/里程碑分享：肯定 + 指出后面真正难的地方
+    milestone: [
+      "第一个付费用户最难，从 0 到 1 的心理门槛比数字重要得多。",
+      "9 美元的分量和 9000 美元不一样，这一步是从想法变成生意的证据。",
+      "订阅从 0 到 3000，最难的是中间那段没人看的时期。",
+      "能做到这个数字，说明选题和坚持缺一不可，光靠内容质量不够。",
+      "这种节点值得记下来，以后回头看才知道自己走了多远。",
+    ],
+    // 招人/管理类：给一个可操作的判断
+    hiring: [
+      "兴趣确实教不了，但光有兴趣扛不住长期枯燥，还得看耐受力。",
+      "技术能教这句我认同，不过筛人的时候最难判断的恰恰是兴趣真假。",
+      "看一个人对什么感兴趣，其实看他业余时间花在哪最准。",
+      "招错人的成本远高于招慢一点，这个岗位尤其。",
+    ],
+    // 争议/擦边/灰产类：不做道德评判，只谈可持续性
+    risky: [
+      "这类需求确实存在，但平台规则一变就可能归零。",
+      "赚得快，风险也大，做不长。",
+      "收入数字好看，但可持续性存疑。",
+      "这种业务最怕政策收紧，钱可能来得快去得也快。",
+    ],
+    // 通用兜底：也要有实质判断，不能是「说得对」
+    general: [
+      "这个角度我之前没往这想，但细想确实成立。",
+      "结论能不能成立，取决于背后那些没写出来的前提。",
+      "这类事没有标准答案，看的是愿意承担哪种代价。",
+      "说得具体，比那些只给结论的文章有用多了。",
+      "看长期的话，这类选择的影响会被时间放大。",
+      "真正难的不是知道该做什么，是在没人反馈的时候还继续做。",
+      "这种复盘比事后总结有价值，因为能看到当时是怎么想的。",
+      "信息密度够，比那种绕半天不给结论的强多了。",
+    ],
+    // 预告/悬念类：「今晚揭晓」这种，不硬猜内容
+    teaser: [
+      "铺垫这么久，期待一下，希望不是又一次吊胃口。",
+      "能把事憋这么久不发，说明中间过程大概不轻松。",
+      "这种预告最考验后续，发不出来比不发更伤信任。",
+    ],
+    // 内容创作 / newsletter / 自媒体
+    content: [
+      "选题决定打开率，质量决定留存，这两件事经常被混着谈。",
+      "订阅从 0 到 3000，中间那段没人看的日子最难熬。",
+      "内容做到最后拼的是持续输出，不是某篇爆款。",
+      "稳定更新本身就筛掉了一大半人。",
+    ],
+  };
+
+  /* 判断帖子属于哪一类（关键词打分，取最高分）。
+   * 这一步很关键：不同场景用不同整句，评论才不会牛头不对马嘴。
+   * 2026-11-18 调优：加「先排除」，避免招人帖被判成独立开发帖。 */
+  function classifyPost(text) {
+    const t = String(text || "");
+    const hit = (ws) => ws.reduce((n, k) => n + (t.includes(k) ? 1 : 0), 0);
+    const score = {
+      hiring:    hit(["招人", "招聘", "面试", "候选人", "员工", "团队", "管理", "CFO", "技术可以教"]),
+      vent:      hit(["亏", "回撤", "跌", "吐回去", "难受", "崩", "麻了", "白干", "套牢", "浮盈", "赚的钱", "输光"]),
+      teaser:    hit(["不再是秘密", "今晚", "揭晓", "公布", "即将", "期待", "准备好"]),
+      content:   hit(["newsletter", "订阅", "选题", "内容", "写作", "更新", "读者"]),
+      risky:     hit(["定制", "私下", "擦边", "灰产", "暴利", "恐怖", "有色", "成人", "真人", "擦边球"]),
+      milestone: hit(["第一个", "终于", "付费用户", "营收", "突破", "里程碑"]),
+      build:     hit(["独立开发", "创业", "闷头", "推广", "分发", "做一个", "做出来", "上架", "需求", "MVP"]),
+      opinion:   hit(["趋势", "时代", "未来", "行业", "意味着", "本质", "我认为", "并没有", "AI"]),
+    };
+    if (score.hiring >= 1) return "hiring";     // 招人类优先，误判最扎眼
+    if (score.vent >= 2) return "vent";         // 亏损类次优先，最需要共情
+    if (score.teaser >= 2) return "teaser";     // 预告类单独处理，不硬猜内容
+    if (score.content >= 2) return "content";   // 内容创作类
+    if (score.risky >= 2) return "risky";       // 争议/擦边类，只谈风险不谈道德
+
+    let best = "general", bestV = 1;            // 至少 2 分才算命中
+    for (const [k, v] of Object.entries(score)) if (v > bestV) { bestV = v; best = k; }
+    return best;
+  }
 
   // 运行时使用的池子（可被面板覆盖）
   let MINE_SYSTEM = DEFAULT_MINE_PROMPT;
-  let MINE_TEMPLATES = DEFAULT_MINE_TEMPLATES.slice();
+  let CUSTOM_TEMPLATES = null;    // 面板自定义的模板（扁平池）
+
+  const DEFAULT_MINE_TEMPLATES = Object.values(MINE_TEMPLATES_BY_SCENE).flat();
+
+  /* 观点检测：一条合格的评论，除了「引用帖子」之外，必须还有**观点**——
+   * 判断、因果、条件、取舍，至少占一样。
+   * 反例：「刷到一位兄弟我收藏了」—— 只有情绪，没有任何判断，等于废话。
+   * 反例：「这点我认同」—— 只有态度。
+   * 正例：「我认同，难的是后面执行」—— 态度 + 具体判断。
+   */
+  const OPINION_MARKERS = [
+    // 因果/条件/转折
+    "但", "不过", "然而", "其实", "关键", "取决", "前提", "如果", "除非",
+    "因为", "所以", "反而", "才", "除非",
+    // 判断词
+    "难的是", "最难", "容易", "风险", "代价", "成本", "收益", "复利", "最难熬",
+    "未必", "不一定", "短期", "长期", "可持续", "可持续性", "分水岭",
+    "不同意", "保留", "理想化", "复杂", "相反", "认同", "同意", "部分同意",
+    "落地", "执行", "坚持", "投入", "资源", "节奏", "方向", "位置",
+    "省", "负担", "坑", "机会", "值得", "更关心", "逃避", "稀缺",
+    // 期待/评价/信任类（预告帖、内容创作帖常用）
+    "期待", "希望", "考验", "信任", "吊胃口", "铺垫", "不轻松",
+    "决定", "留存", "打开率", "持续", "稳定", "拼", "筛掉", "熬",
+    "有价值", "密度", "结论", "前提", "变数", "忽略", "放大", "影响",
+  ];
+
+  function hasOpinion(text) {
+    const t = String(text || "");
+    return OPINION_MARKERS.some((m) => t.includes(m));
+  }
 
   /* 复述/角色错位检测（用户踩过的真实坑：作者说「我把它上架了」，评论也回「我把它上架了」）。
    * 分两层，因为单纯字面匹配挡不住**改写式复述**：
@@ -270,11 +398,23 @@ globalThis.COMMENT_GEN = (() => {
     const src = String((post && (post.ctxReply || post.text)) || "").replace(/\s/g, "");
     if (!c || !src) return false;
 
-    // ① 字面：8 字连续片段
+    /* ① 字面复述：**只在评论把这段话说成自己的时候才算**。
+     * 引用原帖事实（「订阅从 0 到 3000」）是正常评论手法，不该拦。
+     * 判据：评论文本里，该片段前面紧跟「我/我也/我刚/我已经」这类第一人称主语 →
+     *       是把作者的经历据为己有 → 复述。
+     */
     if (src.length >= 8) {
       const WIN = 8;
       for (let i = 0; i + WIN <= src.length; i++) {
-        if (c.includes(src.slice(i, i + WIN))) return true;
+        const seg = src.slice(i, i + WIN);
+        const idx = c.indexOf(seg);
+        if (idx < 0) continue;
+        const before = c.slice(Math.max(0, idx - 8), idx);
+        // 前面是第一人称 → 据为己有
+        if (/(^|[，。！？、；])我(也|就|已经|刚|刚刚|之前|直接|终于|当时|后来|现在)?$/.test(before)) return true;
+        // 或者整句几乎就是原帖（相似度极高）→ 复述
+        if (sim(c, src) >= 0.8) return true;
+        // 否则只是引用事实，放行
       }
     }
 
@@ -305,53 +445,43 @@ globalThis.COMMENT_GEN = (() => {
   function applyCustom(beh) {
     MINE_SYSTEM = (beh && beh.comment_prompt) || DEFAULT_MINE_PROMPT;
     const raw = (beh && beh.comment_templates || "").trim();
-    MINE_TEMPLATES = raw
+    CUSTOM_TEMPLATES = raw
       ? raw.split(/\n+/).map((s) => s.trim()).filter(Boolean)
-      : DEFAULT_MINE_TEMPLATES.slice();
+      : null;                      // 没自定义 → 用分场景内置池
   }
 
-  let lastMine = -1;
-  /* 生成一条模板评论。
-   * 关键思路调整（修「半导体周期见」「我觉得这个工」这类断词）：
-   *   先按可用空间挑短语很别扭 —— 模板固定字数一多，短语就被挤成半截词。
-   *   改成：短语按「有意义的长度」取（4~10 字，取完整词块），
-   *         再挑一条「短语 + 模板固定字数 ≤ 上限」的模板来装它。 */
-  function mineTemplate(post, len) {
-    // 通知回复场景优先用「他说的话」当短语来源，其次才是正文
-    const src = post.ctxReply || post.text || "";
-    const order = MINE_TEMPLATES.map((_, i) => i).sort(() => Math.random() - 0.5);
+  /* 生成一条模板评论（第 3 版：按帖子场景挑整句）。
+   * 返回 { text } 或 null。
+   * 逻辑：
+   *   ① 判断帖子场景（vent/build/opinion/milestone/hiring/general）
+   *   ② 从该场景的整句里随机挑一条
+   *   ③ 面板自定义过模板 → 优先用自定义池（用户自己写的，尊重他的配置）
+   */
+  function mineTemplate(post) {
+    const src = String(post.ctxReply || post.text || "");
+    const scene = classifyPost(src);
+    const pool = (CUSTOM_TEMPLATES && CUSTOM_TEMPLATES.length)
+      ? CUSTOM_TEMPLATES
+      : (MINE_TEMPLATES_BY_SCENE[scene] || MINE_TEMPLATES_BY_SCENE.general);
 
-    /* **不再因为字数超标就丢弃句子**（用户要求：目标十几个字即可，
-     * 不能为了凑字数把一句话讲一半就砍掉）。短语长度只作为「偏好」，
-     * 取到多长就用多长，拼出来的句子即使超过目标字数也照样用。 */
-    const tryOne = (tplIdx, phraseLen) => {
-      const tpl = MINE_TEMPLATES[tplIdx];
-      const phrase = shortPhrase(src, phraseLen);
-      if (!phrase) return null;
-      return tpl.replaceAll("{p}", phrase);
-    };
+    const pick = [];
+    for (let i = 0; i < pool.length; i++) if (i !== lastMine) pick.push(pool[i]);
+    const tpl = (pick.length ? pick : pool)[Math.floor(Math.random() * (pick.length || pool.length))];
+    if (!tpl) return null;
 
-    for (const i of order) {
-      const tpl = MINE_TEMPLATES[i];
-      const fixed = tpl.replace("{p}", "").length;
-      const ideal = Math.max(4, Math.min(10, len - fixed));
-      for (const pl of [ideal, Math.max(4, ideal - 2), Math.max(4, ideal + 2)]) {
-        const t = tryOne(i, pl);
-        if (t) { lastMine = i; return t; }
-      }
+    // 整句模板不含 {p} → 直接用（这是推荐形式）
+    if (!tpl.includes("{p}")) {
+      lastMine = pool.indexOf(tpl);
+      return tpl;
     }
-    return null;
+    // 含 {p} 的自定义模板 → 仍需短语，按剩余空间取完整片段
+    const fixed = tpl.replace("{p}", "").length;
+    const room = Math.max(4, 16 - fixed);
+    const phrase = shortPhrase(src, room) || shortPhrase(src, 10);
+    if (!phrase) return null;
+    return tpl.replaceAll("{p}", phrase);
   }
-
-  // 短语取不到时用的纯观点短句（不依赖原帖，但至少是通顺的一句话）
-  const NO_PHRASE_TEMPLATES = [
-    "这条我持保留，得看后续。",
-    "方向没错，落地最难。",
-    "有同感，短期热闹长期未必。",
-    "挺真实的，代价也不小。",
-    "我更看长期，不急着下结论。",
-    "这判断我认同，但风险也要说。",
-  ];
+  let lastMine = -1;
 
   // 占位符替换（提示词里可用 {len} {lo} {hi} {tone} {post}）
   function fill(tpl, vars) {
@@ -461,8 +591,10 @@ globalThis.COMMENT_GEN = (() => {
       if (!t) return null;
       const [ok] = SOP.validateComment(t, post, beh);
       if (!ok) return null;
-      // 【硬拦截】复述作者的话 = 身份错位，直接判不合格
+      // 【硬拦截】复述作者的话 = 身份错位
       if (echoesAuthor(t, post)) return null;
+      // 【硬拦截】没有观点 = 废话（「刷到一位兄弟我收藏了」这类）
+      if (!hasOpinion(t)) return null;
       return t;
     };
 
@@ -531,30 +663,23 @@ globalThis.COMMENT_GEN = (() => {
              ...(t ? { note: "未配置密钥，短句模板兜底" } : { error: "模板都超出字数上限，去「评论规则」窗口改短一点" }) };
   }
 
-  /* 模板兜底：试多条模板，`{p}` 按每条模板的剩余空间截断，
-   * 某条放不下（模板本身太长）或与历史重复就换下一条。
-   * 全部都取不到短语时，退回「不带短语的纯观点短句」——宁可少一点针对性，
-   * 也不要发出一句机器拼出来的怪话。 */
+  /* 模板兜底：按场景挑整句，过校验、过重复检测。
+   * 整句模板不依赖短语，所以不会再出现「只有 9 美元 这说法有点理想化」这种错配。 */
   function tryTemplates(post, len, beh, tries = 12) {
-    const n = Math.max(1, MINE_TEMPLATES.length);
-    for (let i = 0; i < Math.min(tries, n); i++) {
-      const t = mineTemplate(post, len);
+    for (let i = 0; i < tries; i++) {
+      const t = mineTemplate(post);
       if (!t) continue;
       const [ok] = SOP.validateComment(t, post, beh);
       if (!ok) continue;
-      if (isDuplicate(t, post, beh)) continue;   // 和发过的太像 → 换一条
+      if (echoesAuthor(t, post)) continue;
+      if (!hasOpinion(t)) continue;
+      if (isDuplicate(t, post, beh)) continue;
       return t;
     }
-    // 没有可用短语 → 纯观点兜底
-    const pool = NO_PHRASE_TEMPLATES.filter((t) => {
-      const [ok] = SOP.validateComment(t, post, beh);
-      return ok && !isDuplicate(t, post, beh);
-    });
-    if (pool.length) return pool[Math.floor(Math.random() * pool.length)];
     return "";
   }
 
-  return { generate, classifyScene, generateMine, applyCustom, tryTemplates,
-           isDuplicate, setHistory, pushHistory, sim,
-           DEFAULT_MINE_PROMPT, DEFAULT_MINE_TEMPLATES };
+  return { generate, classifyScene, classifyPost, generateMine, applyCustom, tryTemplates,
+           isDuplicate, setHistory, pushHistory, sim, hasOpinion, echoesAuthor,
+           DEFAULT_MINE_PROMPT, DEFAULT_MINE_TEMPLATES, MINE_TEMPLATES_BY_SCENE };
 })();
