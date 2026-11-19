@@ -70,7 +70,7 @@
     // 长文折叠的「显示更多」——中英文界面都是同一个 data-testid，但要按文案兜底
     showMore: '[data-testid="tweet-text-show-more-link"]',
     // 顶部「新帖」提示条：优先 data-testid（界面语言无关），aria-label 只作兜底
-    newPostsBtn: '[data-testid="newTweetsPill"], [data-testid="floatingButton"], [data-testid="scrollToTopButton"], [aria-label="New posts"], [aria-label="新帖子"]',
+    newPostsBtn: '[data-testid="newTweetsPill"], [data-testid="floatingButton"], [data-testid="scrollToTopButton"], [aria-label="New posts"], [aria-label="新帖子"], [aria-label="已发布"]',
     // 时间线顶部的「Show N posts」按钮（有新帖待加载时出现），点它直接拉新一批
     showPostsBtn: '[data-testid="newTweetsPill"], [data-testid="pillButton"], button[aria-label*="posts"], button[aria-label*="帖子"]',
   };
@@ -244,45 +244,51 @@
     return false;
   }
 
-  /* 时间线刷新与回顶（用户策略：帖子是无限流，新帖在上方，往下滑会滑到旧帖）
-   * 优先级（越靠前越像真人）：
-   *   1) 点顶部蓝色「新帖」箭头 / 「Show N posts」按钮 —— 用户明确要求用这个
-   *   2) 滚回时间线顶部
-   *   3) 都动不了就等
-   * 返回 "posts" | "topped" | "timeout"。 */
+  /* 遇到重复/旧帖子时的处理（用户明确的三级顺序）：
+   *   1) 一直往下滑，直到滑出新帖子
+   *   2) 滑不出来 → 点主页横幅下方的「Show N posts」/「新帖」按钮刷新
+   *   3) 还不行 → 点左侧栏「主页」重新进首页，回主流程再走一遍
+   * 返回 "scrolled" | "posts" | "home" | "timeout"。 */
   async function refreshOrTop(reason) {
+    // ---- 1) 死命往下滑（用户第一优先）----
     const before = timelineSig();
-
-    // 1) 「Show N posts」/「新帖」按钮（按可见文案找，选择器会随 X 改版变）
-    const pill = findNewPostsPill();
-    if (pill) {
-      const label = (pill.innerText || "").trim().slice(0, 24);
-      if (await clickEl(pill, { settle: [1500, 2600] })) {
-        await logAct(`${reason} → 点「${label}」拉新帖`, "nav");
-        await sleep(rnd(1200, 2200) * SPD);
-        if (await waitTimelineChange(before, 15000, "拉取新帖")) return "posts";
-        await sleep(rnd(4000, 8000) * SPD);
-        return "topped";
+    let lastCount = document.querySelectorAll(SEL.article).length;
+    for (let i = 0; i < 8; i++) {
+      await scrollBy(ri(2, 4));
+      const grown = await waitMoreArticles(lastCount, 6000);
+      if (grown) {
+        lastCount = document.querySelectorAll(SEL.article).length;
+        // 新内容真的变了才算「滑出新帖」
+        if (timelineSig() !== before) {
+          await logAct(`${reason} → 继续往下滑，滑出了新内容`, "nav");
+          return "scrolled";
+        }
+        // DOM 条数增加但签名没变，再滑一屏看看
+        continue;
       }
+      await sleep(rnd(800, 1600) * SPD);
+    }
+
+    // ---- 2) 点横幅下方的「Show N posts」/「新帖」按钮 ----
+    const pill = findNewPostsPill();
+    if (pill && await clickEl(pill, { settle: [1500, 2600] })) {
+      const label = (pill.innerText || "").trim().slice(0, 24) || "新帖";
+      await logAct(`${reason} → 滑不出新帖，点「${label}」刷新`, "nav");
+      await sleep(rnd(1200, 2200) * SPD);
+      if (await waitTimelineChange(before, 15000, "点按钮刷新")) return "posts";
+      return "timeout";
     }
     const arrow = q(SEL.newPostsBtn);
     if (arrow && await clickEl(arrow, { settle: [1500, 2600] })) {
-      await logAct(`${reason} → 点顶部「新帖」箭头回顶刷新`, "nav");
+      await logAct(`${reason} → 点顶部「新帖」箭头刷新`, "nav");
       await sleep(rnd(1200, 2200) * SPD);
       if (await waitTimelineChange(before, 15000, "顶部刷新")) return "posts";
-      await sleep(rnd(4000, 8000) * SPD);
-      return "topped";
+      return "timeout";
     }
 
-    // 2) 没有按钮 → 滚回时间线顶部等新批次
-    for (let i = 0; i < 8; i++) {
-      await scrollBy(-2);
-      await sleep(rnd(400, 800) * SPD);
-      const top = q(SEL.article);
-      if (!top || top.getBoundingClientRect().top < 80) break;
-    }
-    await logAct(`${reason} → 滚回时间线顶部等新帖`, "nav");
-    if (await waitTimelineChange(before, 15000, "顶部刷新")) return "topped";
+    // ---- 3) 都不行 → 点左侧栏「主页」重进（真实点击，不拼 URL）----
+    await logAct(`${reason} → 没按钮可点，点左侧栏「主页」重新进首页`, "nav");
+    if (await clickNav(SEL.navHome, "首页")) return "home";
     return "timeout";
   }
 
@@ -899,14 +905,15 @@
     return false;
   }
 
-  // 找「Show N posts」/「新帖」按钮（按可见文案，X 会改版）
+  // 找顶部横幅下方的刷新按钮（按可见文案，X 会改版、界面语言会变）
+  // 中文是「已发布」（截图为证），英文是「Show N posts」「New posts」
   function findNewPostsPill() {
     return [...document.querySelectorAll("button, div[role='button']")].find((el) => {
       const t = (el.innerText || "").trim();
       if (!t || t.length > 40) return false;
-      if (!/Show\s+\d+\s+posts?|显示\s*\d+\s*条|\d+\s*posts?|新帖子|新帖子?显示|new\s+posts?/i.test(t)) return false;
+      if (!/已发布|已推送|Show\s+\d+\s+posts?|显示\s*\d+\s*条|\d+\s*posts?|新帖子|新帖子?显示|new\s+posts?/i.test(t)) return false;
       const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
+      return r.width > 0 && r.height > 0;      // 必须是可见的
     }) || null;
   }
 
@@ -995,33 +1002,41 @@
         }
 
         await logAct(stuckMs >= 60000
-          ? "连续 1 分钟以上都是看过的旧帖 → 强制刷新"
-          : "连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 回顶部拉新帖", "wait");
+          ? "连续 1 分钟以上都是看过的旧帖 → 开始刷新"
+          : "连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 开始刷新", "wait");
+        /* refreshOrTop 内部已按用户要求的三级顺序走：
+         *   ① 死命往下滑 → ② 点「已发布」/新帖按钮 → ③ 点左侧栏「主页」重进
+         * 返回值 now: "scrolled" | "posts" | "home" | "timeout" */
         const r = await refreshOrTop("旧帖卡住");
         ctx.homeReads = 0;
         ctx.oldSince = 0;
         ctx.scrollTries = 0;
 
-        // 【用户策略】刷新也没用 → 换栏目看看。
-        // 为你推荐刷不动了就切「正在关注」，正在关注也没了就切回「为你推荐」，来回换。
-        // 两个栏目都没有新帖时才真正等待（这时是真的没内容）。
-        if (r === "timeout" || r === "topped") {
-          ctx.noNewRounds = (ctx.noNewRounds || 0) + 1;
-          if (ctx.noNewRounds >= 2) {
-            const cur = ctx.feedNow || ctx.feed || "for_you";
-            const next = cur === "following" ? "for_you" : "following";
-            ctx.noNewRounds = 0;
-            await logAct(`「${FEED_LABELS[cur]?.cn || cur}」拉不出新帖了 → 换到「${FEED_LABELS[next].cn}」看看`, "nav");
-            if (await switchFeedTab(next)) {
-              ctx.feedNow = next;
-              ctx.seen = [];              // 换栏目后内容不同，重新从零开始记「读过」
-              ctx.homeReads = 0;
-              await sleep(rnd(3000, 6000) * SPD);
-              return;
-            }
-          }
-        } else {
+        if (r === "scrolled" || r === "posts") {
           ctx.noNewRounds = 0;
+          return;                       // 拿到内容了，继续正常刷
+        }
+        if (r === "home") {
+          ctx.tabDone = false;          // 重进首页，回到流程开头重新走
+          ctx.noNewRounds = 0;
+          return;
+        }
+
+        // 三级都失败（timeout）→ 换栏目看看。
+        // 为你推荐刷不动了就切「正在关注」，那边也没了就切回「为你推荐」，来回换。
+        ctx.noNewRounds = (ctx.noNewRounds || 0) + 1;
+        if (ctx.noNewRounds >= 2) {
+          const cur = ctx.feedNow || ctx.feed || "for_you";
+          const next = cur === "following" ? "for_you" : "following";
+          ctx.noNewRounds = 0;
+          await logAct(`「${FEED_LABELS[cur]?.cn || cur}」拉不出新帖了 → 换到「${FEED_LABELS[next].cn}」看看`, "nav");
+          if (await switchFeedTab(next)) {
+            ctx.feedNow = next;
+            ctx.seen = [];              // 换栏目后内容不同，重新从零开始记「读过」
+            ctx.homeReads = 0;
+            await sleep(rnd(3000, 6000) * SPD);
+            return;
+          }
         }
         await sleep(rnd(8000, 15000) * SPD);
       }
@@ -1050,10 +1065,11 @@
       ctx.mineSkips = (ctx.mineSkips || 0) + 1;
       await scrollBy(ri(1, 2));
       await waitMoreArticles(beforeMine, 12000);
-      if (ctx.mineSkips >= 4) {          // 连续几屏都是自己的 → 回顶部换一批
+      if (ctx.mineSkips >= 4) {          // 连续几屏都是自己的 → 刷新换一批
         ctx.mineSkips = 0;
-        await logAct("连续几屏都是自己的帖子 → 回顶部拉新一批", "nav");
-        await refreshOrTop("整屏都是自己的帖子");
+        await logAct("连续几屏都是自己的帖子 → 刷新换一批", "nav");
+        const r = await refreshOrTop("整屏都是自己的帖子");
+        if (r === "home") ctx.tabDone = false;
         ctx.homeReads = 0;
       }
       saveCtx(ctx); return;
