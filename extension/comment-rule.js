@@ -1,4 +1,4 @@
-/* comment-rule.js —— 评论规则独立窗口的逻辑
+﻿/* comment-rule.js —— 评论规则独立窗口的逻辑
  *
  * 存的位置和主控制台一致：chrome.storage.local 的 xa_settings
  * （提示词/模板也在里面，所以 content.js 的 getBeh 直接能读到）。
@@ -6,7 +6,7 @@
  *
  * 2026-11-18 改：
  *   · 提示词支持保存多套（comment_prompts 数组 + comment_prompt_id 指向当前用的）
- *   · 加「用真实帖子试效果」：读 15 条程序实际保存的帖子，一键调模型生成评论
+ *   · 加「用真实帖子试效果」：读 5 条程序实际保存的帖子，一键调模型生成评论
  */
 
 const $ = (id) => document.getElementById(id);
@@ -179,7 +179,7 @@ async function loadPosts() {
   box.innerHTML = '<div class="item">读取中…</div>';
   let posts = [];
   try {
-    const r = await chrome.runtime.sendMessage({ t: "get_posts_sample", n: 15 });
+    const r = await chrome.runtime.sendMessage({ t: "get_posts_sample", n: 5 });
     posts = (r && r.items) || [];
   } catch (e) { posts = []; }
 
