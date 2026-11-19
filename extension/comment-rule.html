@@ -50,9 +50,19 @@
              font-size: 11px; color: #aab8c2; cursor: pointer; border: 1px solid #2f3336; }
   .ph span:hover { border-color: #1d9bf0; color: #1d9bf0; }
   .live { background: #0d141a; border: 1px dashed #38444d; border-radius: 10px;
-          padding: 12px 14px; min-height: 60px; }
-  .live .item { padding: 3px 0; color: #e7e9ea; }
+          padding: 12px 14px; min-height: 60px; max-height: 620px; overflow-y: auto; }
+  .live .item { padding: 8px 0; color: #e7e9ea; border-bottom: 1px solid #1b232b; }
+  .live .item:last-child { border-bottom: none; }
   .live .num { color: #536471; font-size: 11px; }
+  .postHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .postText { width: 100%; background: #16181c; color: #e7e9ea; border: 1px solid #2f3336;
+              border-radius: 8px; padding: 8px 10px; font-size: 13px; line-height: 1.5;
+              font-family: inherit; resize: vertical; }
+  .postText:focus { outline: none; border-color: #1d9bf0; }
+  .cmt { margin-top: 6px; padding: 6px 10px; background: #0f2a1d; border-left: 3px solid #00ba7c;
+         border-radius: 6px; font-size: 13px; color: #d6f5e6; }
+  .cmt.bad { background: #2a0f18; border-left-color: #f9158b; color: #f5c6d8; }
+  button.mini { padding: 2px 8px; font-size: 11px; border-radius: 6px; }
   .tip { background: #1c2b3a; border-left: 3px solid #1d9bf0; border-radius: 6px;
          padding: 9px 12px; font-size: 12px; color: #aab8c2; margin: 10px 0; }
   .tip.warn { background: #2b2510; border-left-color: #ffd400; }
@@ -186,13 +196,18 @@
   <div class="card">
     <h2>用真实帖子试效果</h2>
     <p class="desc">
-      下面 15 条是程序<b>实际浏览并保存下来的帖子</b>。点「一键生成」会用你现在选的提示词和模型，
-      给每条都生成一条评论，直接看效果对不对。
+      下面的帖子可以<b>随便改、删、加</b>。默认从程序实际保存的浏览记录里拉最多 15 条，
+      你也可以自己贴几条想试的。点「一键生成」用它给你现在选的提示词和模型各生成一条评论。
     </p>
     <div class="row">
       <button id="genAll">一键生成评论（调用模型）</button>
-      <button class="ghost" id="reloadPosts">重新读取帖子</button>
       <button class="ghost" id="genTpl">只用模板生成（不花额度）</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="ghost" id="addPost">+ 加一条</button>
+      <button class="ghost" id="reloadPosts">重新读取帖子</button>
+      <button class="ghost" id="clearPosts">全部清空</button>
+      <span class="hint" id="postCount"></span>
       <span class="hint" id="genMsg"></span>
     </div>
     <div class="live" id="postList"></div>

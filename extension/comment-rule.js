@@ -198,12 +198,17 @@ async function loadPosts() {
   }
   POSTS = posts;
   renderPosts([]);
+  updatePostCount();
   $("genMsg").textContent = posts[0] && posts[0].sample
     ? "没读到保存的帖子，用的是内置样本" : `已读取 ${posts.length} 条真实帖子`;
 }
 
 function renderPosts(results) {
   const box = $("postList");
+  if (!POSTS.length) {
+    box.innerHTML = '<div class="item" style="color:#71767b">列表是空的，点「加一条」自己写帖子，或点「重新读取帖子」拉取。</div>';
+    return;
+  }
   box.innerHTML = POSTS.map((p, i) => {
     const r = results[i];
     const cmt = r === undefined ? "" :
@@ -211,17 +216,59 @@ function renderPosts(results) {
       : !r ? '<div class="cmt bad">没有合格评论</div>'
       : `<div class="cmt">→ ${escapeHtml(r)} <span class="num">${r.length} 字</span></div>`;
     return `<div class="item">
-      <div class="num">#${i + 1}${p.sample ? " · 内置样本" : ""}</div>
-      <div>${escapeHtml(String(p.text || "").slice(0, 160))}</div>
+      <div class="postHead">
+        <span class="num">#${i + 1}${p.sample ? " · 内置样本" : p.custom ? " · 自己填的" : ""}</span>
+        <button class="ghost mini" data-del="${i}">删除</button>
+      </div>
+      <textarea class="postText" data-idx="${i}" rows="2"
+        placeholder="粘贴一条帖子内容…">${escapeHtml(String(p.text || ""))}</textarea>
       ${cmt}
     </div>`;
   }).join("");
+
+  // 编辑正文
+  box.querySelectorAll(".postText").forEach((ta) => {
+    ta.oninput = () => {
+      const i = parseInt(ta.dataset.idx, 10);
+      if (POSTS[i]) { POSTS[i].text = ta.value; POSTS[i].custom = true; POSTS[i].sample = false; }
+    };
+  });
+  // 删除该条
+  box.querySelectorAll("[data-del]").forEach((btn) => {
+    btn.onclick = () => {
+      const i = parseInt(btn.dataset.del, 10);
+      POSTS.splice(i, 1);
+      renderPosts([]);
+      updatePostCount();
+    };
+  });
+}
+
+function updatePostCount() {
+  const el = $("postCount");
+  if (el) el.textContent = `共 ${POSTS.length} 条`;
+}
+
+function addPost() {
+  POSTS.push({ id: "custom" + Date.now(), text: "", custom: true });
+  renderPosts([]);
+  updatePostCount();
+  // 滚到最新一条并聚焦
+  const list = $("postList");
+  const last = list.querySelector(".postText:last-of-type") || list.querySelector(".postText");
+  const all = list.querySelectorAll(".postText");
+  if (all.length) { const t = all[all.length - 1]; t.focus(); t.scrollIntoView({ block: "center" }); }
 }
 
 // ---------------- 生成 ----------------
 
 async function generateAll(useLlm) {
-  if (!POSTS.length) { $("genMsg").textContent = "先点「重新读取帖子」"; return; }
+  // 过滤掉空白的帖子（用户加了一条但没填内容）
+  const targets = [];
+  for (let i = 0; i < POSTS.length; i++) {
+    if (String(POSTS[i].text || "").trim()) targets.push(i);
+  }
+  if (!targets.length) { $("genMsg").textContent = "没有可生成的帖子，先填内容"; return; }
   if (useLlm && (!LLM.apiKey || !LLM.baseUrl || !LLM.model)) {
     $("genMsg").textContent = "没配 API，只能用模板生成";
     useLlm = false;
@@ -240,8 +287,9 @@ async function generateAll(useLlm) {
   renderPosts([]);
 
   const results = [];
-  for (let i = 0; i < POSTS.length; i++) {
-    $("genMsg").textContent = `生成中… ${i + 1}/${POSTS.length}`;
+  for (let k = 0; k < targets.length; k++) {
+    const i = targets[k];
+    $("genMsg").textContent = `生成中… ${k + 1}/${targets.length}`;
     try {
       let r = "";
       if (useLlm) {
@@ -250,14 +298,14 @@ async function generateAll(useLlm) {
         r = (g && g.text) || "";
       }
       if (!r) r = COMMENT_GEN.tryTemplates({ text: POSTS[i].text }, beh.comment_target_len, beh) || "";
-      results.push(r || null);
+      results[i] = r || null;
     } catch (e) {
-      results.push(null);
+      results[i] = null;
     }
     renderPosts(results);
   }
   const ok = results.filter(Boolean).length;
-  $("genMsg").textContent = `完成：${ok}/${POSTS.length} 条生成成功` + (useLlm ? "（调用模型）" : "（模板）");
+  $("genMsg").textContent = `完成：${ok}/${targets.length} 条生成成功` + (useLlm ? "（调用模型）" : "（模板）");
 }
 
 // ---------------- 保存 ----------------
@@ -351,6 +399,13 @@ $("resetTemplates").onclick = () => {
 $("comment_templates").oninput = () => updateTplCount();
 
 $("reloadPosts").onclick = () => loadPosts();
+$("addPost").onclick = () => addPost();
+$("clearPosts").onclick = () => {
+  POSTS = [];
+  renderPosts([]);
+  updatePostCount();
+  $("genMsg").textContent = "已清空，点「加一条」自己写";
+};
 $("genAll").onclick = () => generateAll(true);
 $("genTpl").onclick = () => generateAll(false);
 $("save").onclick = save;
