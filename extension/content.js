@@ -1,4 +1,4 @@
-/* content.js —— 页面操作 + 会话状态机（Python 版 pages/x_twitter.py + tools/x_session.py 的移植）
+﻿/* content.js —— 页面操作 + 会话状态机（Python 版 pages/x_twitter.py + tools/x_session.py 的移植）
  *
  * 分工：
  *   · 本文件只碰 DOM：读帖、找元素、算坐标；所有「点击/打字/滚轮」经
@@ -882,6 +882,17 @@
   // 发成功后把这条记进历史，供后续去重
   function noteComment(text) { COMMENT_GEN.pushHistory(text); }
 
+  /* 评论来源标记：模型 / 模板。
+   * 之前日志不写来源，评论雷同时看不出是模型在说套话还是退回了固定池，
+   * 排查全靠猜。现在每条都标出来，一眼能看出比例。 */
+  function srcTag(gen) {
+    if (!gen) return "来源未知";
+    if (gen.source === "llm")
+      return (`模型 ${gen.model || ""}`).trim() + (gen.attempts > 1 ? `（第 ${gen.attempts} 次才过）` : "");
+    if (gen.source === "template") return "⚠ 模板降级（模型没给出合格句子）";
+    return gen.source || "来源未知";
+  }
+
   async function startSession() {
     aborted = false;                       // 清掉上次停止留下的中断标志
     stopLoop();                            // 清掉可能残留的旧定时器
@@ -907,6 +918,16 @@
             notifTodo: [], current: null, plan: null };
     saveCtx(ctx);
     await logAct(`会话开始：本轮随机时长 ${dur} 分钟（区间 ${smin}~${smax}） · 速度系数 ${SPD}（1=原速，越大越慢）`);
+    // 明确告知用的是哪套提示词：自定义的可能是旧模板，评论雷同时先查这里
+    {
+      const u = beh.comment_prompt && beh.comment_prompt.trim();
+      const pv = u ? u.slice(0, 40).replace(/\s+/g, " ") : "";
+      await logAct(u
+        ? `评论提示词：⚠ 用的是设置里存的自定义提示词（"${pv}…"）`
+        : `评论提示词：内置默认（反雷同版）`, u ? "warn" : "judge");
+      if (u && (/即时通讯|聊天软件|回复助手|附和/.test(u)))
+        await logAct(`⚠ 检测到旧版聊天助手模板，会导致评论结构高度雷同 → 去「评论规则」窗口换成默认提示词或新的正式号提示词`, "fail");
+    }
     if (!_off.calibrated) await calibrateOffset();
     startStatsSync();       // 会话统计实时同步到控制台
     // 【用户要求 1】任务开始先刷新一次时间线，保证拿到的是最新的帖子
@@ -1265,7 +1286,7 @@
           });
           acts.comment = text.slice(0, 120);
           noteComment(text);
-          await logAct(`✓ 评论 @${post.handle}：${text}（${text.length} 字${rev ? ` · 审核 ${rev.score} 分` : ""}）`, "cmt");
+          await logAct(`✓ 评论 @${post.handle}：${text}（${text.length} 字${rev ? ` · 审核 ${rev.score} 分` : ""} · ${srcTag(gen)}）`, "cmt");
           await sleep(writeGap(beh));   // 写操作间隔：真人不会连发
         } else {
           await logAct(`✗ 评论失败：${r.error}`);
@@ -1388,7 +1409,7 @@
               });
               noteComment(text);
               await recordTweet(t, { comment: text.slice(0, 120) });
-              await logAct(`✓ 主页互动：评论 @${handle}：${text.slice(0, 40)}`);
+              await logAct(`✓ 主页互动：评论 @${handle}：${text.slice(0, 40)}（${srcTag(gen)}）`);
               await sleep(writeGap(beh));
             } else {
               await logAct(`✗ 主页互动评论失败：${r.error}`);
@@ -1765,7 +1786,7 @@
           });
           noteComment(text);
           await recordTweet(post, { comment: text.slice(0, 120), via: "notification" });
-          await logAct(`✓ 回复 @${post.handle || ctx.current.handle}：${text}（${text.length} 字${rev ? ` · 审核 ${rev.score} 分` : ""}）`, "cmt");
+          await logAct(`✓ 回复 @${post.handle || ctx.current.handle}：${text}（${text.length} 字${rev ? ` · 审核 ${rev.score} 分` : ""} · ${srcTag(gen)}）`, "cmt");
         } else {
           await logAct(`✗ 回复失败：${r.error}`, "fail");
         }

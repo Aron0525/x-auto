@@ -1,4 +1,4 @@
-﻿/* comment.js —— 评论生成（Python 版 xauto/comment.py 的 JS 移植）
+/* comment.js —— 评论生成（Python 版 xauto/comment.py 的 JS 移植）
  *
  * 两层：
  *   1. 面板里配了密钥 → 让 LLM 读完帖子写一句（内容脚本 fetch 会被 CORS 拦，
@@ -228,6 +228,21 @@ globalThis.COMMENT_GEN = (() => {
 帖子作者是别人，你是评论者，针对帖子内容发表看法：可以认同并补充、可以保留意见、可以说出你的判断。
 
 绝不能复述作者的话，也不能说自己做了帖子里描述的事（作者说他上架了产品，你不能说你也上架了——那是他的事，不是你的）。
+
+【关键要求：不要总用同一个句式】
+你已经在很多帖子下留过言，别人点开主页能看到全部。
+如果每条都是"先肯定 → 再补充 → 提个建议"，一眼就能看出是机器批量发的。
+所以这一条必须换一种开头方式：
+· 可以直接给判断，一上来就说看法，不必先肯定对方
+· 可以用条件句（"如果…那…"）指出什么情况下成立
+· 可以补一个反面情况或例外
+· 可以从一个具体细节切入
+· 可以说出自己的偏好
+· 可以提一个具体问题
+· 可以直接表示不完全同意
+具体用哪一种，见下方【这一条的切入方式】。
+
+不要用"综上所述""值得注意的是""不难发现"这类书面语，不要用直角引号「」包裹原帖内容。
 
 回复语言跟随帖子：帖子用英文就用自然英文，帖子用中文就用中文。
 
@@ -606,6 +621,36 @@ globalThis.COMMENT_GEN = (() => {
 
   /* 我的规则：短评生成。LLM 优先生成，失败/不合格退回短句模板。
    * 长度：目标 len（默认 13，随机 ±5 内浮动），硬上限 20 字。 */
+  /* ---------- 反雷同：切入角度轮换 ----------
+   *
+   * 问题：不管提示词怎么写，模型都倾向于用同一个安全句式——
+   * 「先肯定对方 → 再补充一点 → 有时提个小建议」。
+   * 单条看没问题，连着看十条就是同一个模子，点开主页一眼就露。
+   *
+   * 解法：由**代码**指派切入角度，不让模型自己选。
+   * 记录最近用过的 3 个角度，下次避开，保证连续几条开头不同。
+   */
+  const ANGLES = [
+    { id: "judge",   desc: "直接给出你的判断，一上来就说看法，不要先肯定对方。" },
+    { id: "cond",    desc: "用「如果……那……」的条件句开头，指出这个说法在什么情况下成立。" },
+    { id: "counter", desc: "补一个反面或例外情况，说明什么时候这个做法不灵。" },
+    { id: "detail",  desc: "从帖子里一个具体细节（数字、名词、做法）切入，说它意味着什么。" },
+    { id: "prefer",  desc: "说出你自己的偏好或习惯做法，和别人怎么做的对比一下。" },
+    { id: "ask",     desc: "提一个作者能直接回答的具体问题，不要泛泛地问「你怎么看」。" },
+    { id: "disagree",desc: "明确表示不完全同意，说出你不同的判断。" },
+    { id: "cost",    desc: "指出背后的代价、成本或被忽略的前提。" },
+  ];
+  let angleHistory = [];            // 最近用过的角度 id
+
+  function pickAngle() {
+    const fresh = ANGLES.filter((a) => !angleHistory.includes(a.id));
+    const pool = fresh.length ? fresh : ANGLES;     // 全用过就放开
+    const a = pool[Math.floor(Math.random() * pool.length)];
+    angleHistory.push(a.id);
+    if (angleHistory.length > 3) angleHistory.shift();
+    return a;
+  }
+
   async function generateMine(post, body, beh, llmCfg) {
     const { lo, hi } = SOP.commentLength(beh);
     const len = lo + Math.floor(Math.random() * (hi - lo + 1));   // 每次随机一个目标长度
@@ -644,6 +689,14 @@ globalThis.COMMENT_GEN = (() => {
       if (others.length) parts.push(`已有回复（供参考，不要重复别人说过的）：\n- ${others.join("\n- ")}`);
       if (mineBefore.length)
         parts.push(`我之前在这位作者下发过的评论（绝对不要再说一遍，换个角度）：\n- ${mineBefore.join("\n- ")}`);
+
+      /* 【反雷同】强制指定这一条的切入角度。
+       * 光在提示词里说"换一种方式"模型会偷懒，永远选最安全的"先肯定再补充"。
+       * 这里由代码随机指派一个角度，并避开最近 3 次用过的，
+       * 保证连续几条评论的开头方式不一样，看主页也看不出规律。 */
+      const angle = pickAngle();
+      parts.push(`【这一条的切入方式】${angle.desc}\n必须按这个方式开头，不要用别的句式。`);
+
       parts.push(`要求：大约 ${len} 个字（${lo}~${hi} 是理想区间，多几个字没关系，但句子必须完整），语气${toneCn}。`);
 
       let feedback = "";
