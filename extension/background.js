@@ -126,9 +126,17 @@ async function inputMove(tabId, x, y, speed) {
 async function inputPress(tabId, x, y, speed) {
   // 只负责按下+抬起：移动由 hoverHits 校验阶段完成，避免重复移动
   await sleep(rnd(90, 220) * (speed || 1));        // 到位后的悬停停顿
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, modifiers: 1 });
-  await sleep(rnd(60, 160) * (speed || 1));        // 按压时长
-  const r = await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, modifiers: 0 });
+  /* modifiers 必须是 0。
+   * 以前写成 1（Ctrl），在 X 上等于「Ctrl+左键」，
+   * 会被当成右键/长按，弹出「管理时间线 / 移除 XX」菜单——
+   * 用户看到的就是机器人点栏目时long press出那个菜单。 */
+  await cdp(tabId, "Input.dispatchMouseEvent", {
+    type: "mousePressed", x, y, button: "left", clickCount: 1, modifiers: 0,
+  });
+  await sleep(rnd(60, 160) * (speed || 1));        // 按压时长，别太久（太久也像长按）
+  const r = await cdp(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseReleased", x, y, button: "left", clickCount: 1, modifiers: 0,
+  });
   return r !== null;
 }
 

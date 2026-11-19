@@ -239,10 +239,21 @@
             <span class="hint">硬限流，超过就不再关注（新号建议 5~8）</span></div>
 
           <div class="sec-title">其他</div>
-          <div class="row"><label>首页 Feed</label>
+          <div class="row"><label>起始栏目</label>
             <select id="feed">
-              <option value="for_you">For You（推荐）</option><option value="following">Following（关注）</option>
-            </select></div>
+              <option value="for_you">为你推荐</option><option value="following">正在关注</option>
+            </select>
+            <span class="hint">只在这两个栏目里活动，别的栏目一律不碰</span></div>
+
+          <div class="row"><label>推荐 : 关注</label>
+            <input type="number" id="feed_ratio" min="10" max="95" step="5">
+            <span class="hint">% 给「为你推荐」，剩下给「正在关注」。70 = 7:3（默认），0 和 100 会退化成单栏目</span></div>
+          <div class="row"><label>每读几篇换一次</label>
+            <input type="number" id="feed_batch" min="3" max="30">
+            <span class="hint">读满这个篇数才掷一次骰子决定去哪个栏目，太勤会一直在切换</span></div>
+          <div class="tip">顶部那一排还有「AI」「创业公司」「商业」「加密」「股票」等自建栏目，
+            <b>这些一律不点</b>。机器人每 1.5 秒核对一次当前栏目，只要不是「为你推荐」或
+            「正在关注」就立刻拉回来；连续 3 次拉不回就整页回首页。</div>
           <div class="row"><label>语气</label>
             <select id="tone">
               <option value="friendly">随和</option><option value="professional">专业</option>

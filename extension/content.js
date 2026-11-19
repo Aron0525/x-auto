@@ -385,25 +385,44 @@
 
   async function switchFeedTab(kind) {
     const spec = FEED_LABELS[kind] || FEED_LABELS.for_you;
-    // 先按精确文案匹配，匹配不到再退化成「包含」匹配（栏目标签可能带角标/省略）
+    /* 【只能点这两个栏目，别的都不许碰】
+     * 顶部那一排还有「AI」「创业公司」「商业」「加密」「股票」等用户自建栏目，
+     * 以前的「包含匹配」兜底会误选中它们——用户明确说不看创业公司。
+     * 现在只认精确文案，找不到就放弃切换，绝不点别的栏目。 */
     const tabs = [...document.querySelectorAll(SEL.tab)];
-    let tab = tabs.find((t) => spec.re.test(norm(t.innerText)));
+    const tab = tabs.find((t) => spec.re.test(norm(t.innerText)));
     if (!tab) {
-      tab = tabs.find((t) => {
+      // 退一步：文本里含目标词，且长度很短（排除「创业公司」这类多字栏目）
+      const loose = tabs.find((t) => {
         const tx = norm(t.innerText);
-        return tx.length <= 12 && (/for you|为你推荐/i.test(tx) === (kind !== "following"));
+        if (tx.length > 6) return false;
+        return kind === "following" ? /following|正在关注/i.test(tx) : /for you|为你推荐/i.test(tx);
       });
+      if (!loose) {
+        await logAct(`顶部没有「${spec.cn}」栏目 → 留在当前栏目继续，不去点别的栏目`, "wait");
+        return false;
+      }
+      return clickFeedTab(loose, spec, kind);
     }
-    if (!tab) {
-      await logAct(`没找到顶部栏目按钮（${spec.cn}），按当前栏目继续`, "wait");
-      return false;
-    }
+    return clickFeedTab(tab, spec, kind);
+  }
+
+  async function clickFeedTab(tab, spec, kind) {
     if (tab.getAttribute("aria-selected") === "true") {
       await logAct(`已在「${spec.cn}」栏目，无需切换`);
       return true;
     }
+    /* 点栏目之前先确认它确实是我们要的那个文案。
+     * 坐标点错栏目是最扎眼的错误（用户看到机器人点「创业公司」弹菜单），
+     * 点之前把将要点的目标文字记进日志，出问题能立刻定位。 */
+    const tx = norm(tab.innerText);
+    if (!spec.re.test(tx)) {
+      await logAct(`拒绝点击：目标栏目是「${tx}」，不是「${spec.cn}」`, "skip");
+      return false;
+    }
     const before = timelineSig();
     const label = spec.cn;
+    await logAct(`切栏目：点击「${tx}」`, "nav");
     if (!(await clickEl(tab, { settle: [1500, 2600] }))) return false;
     // 慢网：切栏目后时间线要重新拉取，等内容真的换一批再开始读
     await waitContent(1, 25000, label + " 栏目");
@@ -821,6 +840,7 @@
     stopStatsSync();                  // 先清掉可能存在的旧定时器，避免重复创建
     statsTimer = setInterval(() => {
       if (!ctx || !ctx.run) return;
+      checkFeedTab();                 // 顺带核对栏目（每 1.5 秒，很便宜）
       const cur = ctx.current ? {
         handle: ctx.current.handle || "", phase: ctx.phase,
         text: norm(ctx.current.text).slice(0, 120),
@@ -832,6 +852,38 @@
   }
   function stopStatsSync() {
     if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  }
+
+  /* ---------- 栏目守卫（定时检测） ----------
+   *
+   * 背景：X 顶部除了「为你推荐」「正在关注」，用户自己还加了「AI」「创业公司」
+   * 「商业」「加密」「股票」等栏目。以前点错会落到「创业公司」上并停在那里，
+   * 用户明确说不看这个。
+   * 做法：每 1.5 秒检查当前选中的栏目文字，只要不在白名单里就拉回默认栏目。
+   * 连续纠偏失败 3 次就记一条日志（避免刷屏），并强制走 /home。
+   */
+  let feedFixTries = 0;
+  function checkFeedTab() {
+    if (!ctx || !ctx.run || !onHome()) { feedFixTries = 0; return; }
+    const curTab = [...document.querySelectorAll(SEL.tab)]
+      .find((t) => t.getAttribute("aria-selected") === "true");
+    if (!curTab) return;
+    const tx = norm(curTab.innerText);
+    if (!tx) return;
+    // 白名单：只有这两个栏目算「我们在的」
+    const ok = FEED_LABELS.for_you.re.test(tx) || FEED_LABELS.following.re.test(tx);
+    if (ok) { feedFixTries = 0; return; }
+    // 不在白名单 → 记一次并纠偏
+    feedFixTries++;
+    if (feedFixTries === 1) {
+      logAct(`⚠ 当前停在「${tx}」栏目（不在允许范围）→ 拉回「为你推荐」`, "warn").catch(() => {});
+    }
+    if (feedFixTries > 3) {
+      feedFixTries = 0;
+      goHome().catch(() => {});        // 反复纠不回来就整页回首页
+      return;
+    }
+    switchFeedTab("for_you").catch(() => {});
   }
 
   async function getBeh() {
@@ -873,6 +925,9 @@
       follow_gap_max: s.follow_gap_max ?? 180,
       follow_per_hour: s.follow_per_hour ?? 8,
       speed: s.speed ?? 1.5, feed: s.feed || "for_you",
+      // 栏目轮换：为你推荐占比（0.7 = 7:3），每读满 feed_batch 篇掷一次
+      feed_ratio: s.feed_ratio ?? 0.7,
+      feed_batch: s.feed_batch ?? 7,
       tone: s.tone || "friendly", style: s.style || "normal",
       limits: { like: s.max_like ?? 60, reply: s.max_reply ?? 20, follow: s.max_follow ?? 25 },
       llm: { apiKey: L.apiKey || s.llm_key || "",
@@ -949,6 +1004,9 @@
     ctx = { run: true, phase: beh.notif_enabled ? "notif" : "home",
             feed: beh.feed,                     // 会话默认进的栏目（面板设置）
             feedNow: beh.feed,                  // 当前实际所在栏目（会随刷新失败切换）
+            batchReads: 0,                       // 本块已读篇数（到量后重新抽栏目）
+            quota: null,                         // {target, n} 当前这块在哪个栏目、打算看几篇
+            feedCount: {},                       // 各栏目去过几次（日志/排查用）
             deadline: Date.now() + dur * 60000,
             durMin: dur,
             started: Date.now(), seen: [], stats: { read: 0, expanded: 0, liked: 0,
@@ -1033,9 +1091,11 @@
 
   async function stepHome(beh) {
     if (!onHome()) { await goHome(); return; }
-    /* 栏目策略（用户说明）：主页时间线主要在「为你推荐」看；
-     * 那里没帖子了再去「正在关注」。ctx.feedNow 记录当前实际所在栏目，
-     * 换栏目由「刷新也没新帖」那段逻辑驱动。 */
+    /* 栏目策略（用户要求）：
+     * 「为你推荐」和「正在关注」按比例轮换，默认 7:3。
+     * 以前是"刷不动才换"，结果几乎全在为你推荐，正在关注基本没去过。
+     * 现在每读满一批（默认 7 篇）就按比例决定下一批去哪个栏目。
+     * feedRatio 是为你推荐的占比（0.7 = 推荐 7 成、关注 3 成）。 */
     if (!ctx.tabDone) {
       const want = ctx.feedNow || ctx.feed || "for_you";
       // 只在当前栏目确实不对时才切（切栏目会触发时间线重载，能省则省）
@@ -1046,6 +1106,46 @@
       if (!spec.re.test(curTx)) await switchFeedTab(want);
       ctx.feedNow = want;
       ctx.tabDone = true;
+    }
+
+    /* 【按比例换栏目】用「配额制」而不是「每次掷骰子」。
+     *
+     * 为什么不用掷骰子：只有两个栏目时，每次独立掷骰子会让切换序列变成
+     * 关推关推关推——因为"不进这个就进那个"，看着像完美交替，反而更假。
+     *
+     * 配额制：每轮先按比例抽一个「本轮去哪待着」，并给一个随机的停留篇数。
+     * 推荐占 7 成 → 长期 7:3 正确，但单次停留 4~11 篇不等，
+     * 序列是「推推推推推推推 关关关 推推推推推推推推推 关关关关」这种块状，
+     * 像人真的在一个栏目里翻一会儿再换。 */
+    const quota = ctx.quota;
+    if (quota && (ctx.batchReads || 0) >= quota.n) {
+      // 这一块读完了 → 重新抽下一次去哪、待多久
+      ctx.batchReads = 0;
+      ctx.quota = null;
+    }
+    if (!ctx.quota) {
+      const ratio = Math.max(0.05, Math.min(0.95, beh.feed_ratio ?? 0.7));
+      const base = Math.max(3, Math.round(beh.feed_batch || 7));
+      const goForYou = Math.random() < ratio;
+      const target = goForYou ? "for_you" : "following";
+      // 停留篇数：基准 ±50% 抖动，推荐块和关注块都成块出现
+      // 上限 12：模拟里出现过单块 51 篇，那是状态恢复后 quota 没被消耗导致停留过久
+      const n = Math.min(12, Math.max(2, Math.round(base * (0.5 + Math.random()))));
+      ctx.quota = { target, n };
+      const cur = ctx.feedNow || ctx.feed || "for_you";
+      if (target !== cur) {
+        const ok = await switchFeedTab(target);
+        if (ok) {
+          ctx.feedNow = target;
+          ctx.feedCount = ctx.feedCount || {};
+          ctx.feedCount[target] = (ctx.feedCount[target] || 0) + 1;
+          ctx.seen = [];                 // 换栏目后内容不同，重新记「读过」
+          await logAct(`换到「${FEED_LABELS[target].cn}」，这块打算看 ${n} 篇`, "nav");
+          saveCtx(ctx);
+          return;
+        }
+        ctx.quota = null;                // 切失败就下轮重抽
+      }
     }
     // 每读 5 篇去发现页找一次可关注的人（用户策略：涨关注、涨时间线）
     if ((ctx.homeReads || 0) >= 5 && (await budgetLeft("follow", beh.limits.follow)) > 0) {
@@ -1110,8 +1210,7 @@
           return;
         }
 
-        // 三级都失败（timeout）→ 换栏目看看。
-        // 为你推荐刷不动了就切「正在关注」，那边也没了就切回「为你推荐」，来回换。
+        // 三级都失败（timeout）→ 按设定的比例换栏目看看
         ctx.noNewRounds = (ctx.noNewRounds || 0) + 1;
         if (ctx.noNewRounds >= 2) {
           const cur = ctx.feedNow || ctx.feed || "for_you";
@@ -1120,6 +1219,8 @@
           await logAct(`「${FEED_LABELS[cur]?.cn || cur}」拉不出新帖了 → 换到「${FEED_LABELS[next].cn}」看看`, "nav");
           if (await switchFeedTab(next)) {
             ctx.feedNow = next;
+            ctx.feedCount = ctx.feedCount || {};
+            ctx.feedCount[next] = (ctx.feedCount[next] || 0) + 1;
             ctx.seen = [];              // 换栏目后内容不同，重新从零开始记「读过」
             ctx.homeReads = 0;
             await sleep(rnd(3000, 6000) * SPD);
@@ -1134,6 +1235,8 @@
     ctx.noNewRounds = 0;
     // 选帖策略：按质量加权（重点领域 > 互动帖 > 内容质量），不是无脑第一条
     fresh.forEach((t) => ctx.seen.push(t.id));
+    // 批次计数：读满 feed_batch 篇后按 7:3 比例决定是否换栏目
+    ctx.batchReads = (ctx.batchReads || 0) + fresh.length;
 
     // 【硬规则】自己的帖子和自己发的回复一律不碰：
     // 不点进去、不赞、不评。以前漏了这一步 → 在自己的回复下面回复自己，

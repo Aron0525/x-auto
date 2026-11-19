@@ -2,7 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "session_min_min", "session_max_min", "typing_ms", "follow_per_session",
-             "max_like", "max_reply", "max_follow",
+             "max_like", "max_reply", "max_follow", "feed_ratio", "feed_batch",
              "comment_target_len", "expand_char_min", "write_gap_min", "write_gap_max",
              "min_read_before_refresh", "follow_gap_min", "follow_gap_max", "follow_per_hour"];
 const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "explore_prob",
@@ -15,6 +15,8 @@ const FIELDS = [...NUM, ...PROB, ...TEXT, ...CHK, "speed"];
 const DEFAULTS = {
   session_minutes: 30, session_min_min: 18, session_max_min: 45, session_jitter: true,
   typing_ms: 130, speed: 1.5, feed: "for_you",
+  // 栏目轮换：为你推荐占比 70%（7:3），每读满 7 篇掷一次
+  feed_ratio: 70, feed_batch: 7,
   like_prob: 0.85, comment_prob: 0.85, explore_prob: 0.5,
   expand_prob: 0.9, bookmark_prob: 0.3, follow_per_session: 5,
   comment_rule: "mine", comment_target_len: 13,
@@ -52,6 +54,11 @@ async function loadSettings() {
   const d = await chrome.storage.local.get(["xa_settings", "xa_llm"]);
   const s = { ...DEFAULTS, ...(d.xa_settings || {}) };
   for (const f of FIELDS) if ($(f)) $(f).value = s[f] ?? "";
+  // 栏目比例存的是 0~1 小数，界面显示百分比（0.7 → 70）
+  if ($("feed_ratio")) {
+    const r = s.feed_ratio;
+    $("feed_ratio").value = Math.round((typeof r === "number" && r <= 1 ? r * 100 : (r || 70)));
+  }
   // API 配置放在独立的 xa_llm 里，优先级高于 xa_settings（迁移旧值）
   const llm = d.xa_llm || {};
   // 记住已存的 Key，用于收起状态下显示状态、以及留空时判断"保持原值"
@@ -221,6 +228,14 @@ async function saveSettings() {
   // 会话时长：确保下限 ≤ 上限
   if (s.session_min_min && s.session_max_min && s.session_min_min > s.session_max_min)
     s.session_max_min = s.session_min_min;
+  /* 栏目比例：界面填 70（百分比），存储用 0.7。
+   * 下限 10 / 上限 95，避免设成 0 或 100 后彻底不进另一个栏目。 */
+  if (s.feed_ratio !== undefined) {
+    s.feed_ratio = Math.max(10, Math.min(95, s.feed_ratio || 70)) / 100;
+  }
+  if (s.feed_batch !== undefined) {
+    s.feed_batch = Math.max(3, Math.min(30, s.feed_batch || 7));
+  }
   s.notif_enabled = $("notif_enabled").checked;
   s.dedup_comment = $("dedup_comment").checked;
   s.session_jitter = $("session_jitter").checked;
@@ -464,7 +479,7 @@ async function refresh() {
       try {
         await chrome.scripting.executeScript({
           target: { tabId: xTabId },
-          files: ["sop.js", "comment.js", "content.js"],
+          files: ["sop.js", "comment.js", "review.js", "content.js"],
         });
         await new Promise((r) => setTimeout(r, 400));
         ping = await sendCmd("ping");
