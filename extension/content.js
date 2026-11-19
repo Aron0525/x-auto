@@ -864,7 +864,9 @@
     const beh = await getBeh();
     SOP.setExtraKeywords(beh.focus_keywords);   // 面板自定义的重点关键词生效
     ctx = { run: true, phase: beh.notif_enabled ? "notif" : "home",
-            feed: beh.feed, deadline: Date.now() + beh.session_minutes * 60000,
+            feed: beh.feed,                     // 会话默认进的栏目（面板设置）
+            feedNow: beh.feed,                  // 当前实际所在栏目（会随刷新失败切换）
+            deadline: Date.now() + beh.session_minutes * 60000,
             started: Date.now(), seen: [], stats: { read: 0, expanded: 0, liked: 0,
             commented: 0, bookmarked: 0, followed: 0, skipped: 0 },
             notifTodo: [], current: null, plan: null };
@@ -936,7 +938,20 @@
 
   async function stepHome(beh) {
     if (!onHome()) { await goHome(); return; }
-    if (ctx.feed && !ctx.tabDone) { await switchFeedTab(ctx.feed); ctx.tabDone = true; }
+    /* 栏目策略（用户说明）：主页时间线主要在「为你推荐」看；
+     * 那里没帖子了再去「正在关注」。ctx.feedNow 记录当前实际所在栏目，
+     * 换栏目由「刷新也没新帖」那段逻辑驱动。 */
+    if (!ctx.tabDone) {
+      const want = ctx.feedNow || ctx.feed || "for_you";
+      // 只在当前栏目确实不对时才切（切栏目会触发时间线重载，能省则省）
+      const spec = FEED_LABELS[want] || FEED_LABELS.for_you;
+      const curTab = [...document.querySelectorAll(SEL.tab)]
+        .find((t) => t.getAttribute("aria-selected") === "true");
+      const curTx = curTab ? norm(curTab.innerText) : "";
+      if (!spec.re.test(curTx)) await switchFeedTab(want);
+      ctx.feedNow = want;
+      ctx.tabDone = true;
+    }
     // 每读 5 篇去发现页找一次可关注的人（用户策略：涨关注、涨时间线）
     if ((ctx.homeReads || 0) >= 5 && (await budgetLeft("follow", beh.limits.follow)) > 0) {
       ctx.homeReads = 0;
@@ -982,15 +997,38 @@
         await logAct(stuckMs >= 60000
           ? "连续 1 分钟以上都是看过的旧帖 → 强制刷新"
           : "连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 回顶部拉新帖", "wait");
-        await refreshOrTop("旧帖卡住");
+        const r = await refreshOrTop("旧帖卡住");
         ctx.homeReads = 0;
         ctx.oldSince = 0;
         ctx.scrollTries = 0;
+
+        // 【用户策略】刷新也没用 → 换栏目看看。
+        // 为你推荐刷不动了就切「正在关注」，正在关注也没了就切回「为你推荐」，来回换。
+        // 两个栏目都没有新帖时才真正等待（这时是真的没内容）。
+        if (r === "timeout" || r === "topped") {
+          ctx.noNewRounds = (ctx.noNewRounds || 0) + 1;
+          if (ctx.noNewRounds >= 2) {
+            const cur = ctx.feedNow || ctx.feed || "for_you";
+            const next = cur === "following" ? "for_you" : "following";
+            ctx.noNewRounds = 0;
+            await logAct(`「${FEED_LABELS[cur]?.cn || cur}」拉不出新帖了 → 换到「${FEED_LABELS[next].cn}」看看`, "nav");
+            if (await switchFeedTab(next)) {
+              ctx.feedNow = next;
+              ctx.seen = [];              // 换栏目后内容不同，重新从零开始记「读过」
+              ctx.homeReads = 0;
+              await sleep(rnd(3000, 6000) * SPD);
+              return;
+            }
+          }
+        } else {
+          ctx.noNewRounds = 0;
+        }
         await sleep(rnd(8000, 15000) * SPD);
       }
       return;
     }
     ctx.oldSince = 0;   // 出了新帖就清空「旧帖计时」
+    ctx.noNewRounds = 0;
     // 选帖策略：按质量加权（重点领域 > 互动帖 > 内容质量），不是无脑第一条
     fresh.forEach((t) => ctx.seen.push(t.id));
 
