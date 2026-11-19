@@ -11,11 +11,38 @@
   if (window.__XA_LOADED__) return;
   window.__XA_LOADED__ = true;
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let aborted = false;        // 停止标志（提前声明：sleep 要用）
+  let timer = null;           // 主循环定时器（提前声明：startSession/stopSession 要用）
+
+  /* 可中断的 sleep —— 全项目所有等待点都走它。
+   * 停止时（aborted=true）立即抛 AbortError，而不是傻等完剩下的毫秒。
+   * 这是「点了停止还在动」的核心修复：以前 sleep 只是 setTimeout，
+   * 停止信号要等当前步骤所有 sleep 跑完才生效。 */
+  const ABORT = Symbol("aborted");
+  const sleep = (ms) => new Promise((resolve, reject) => {
+    if (aborted) return reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    const total = Math.max(0, ms);
+    const tick = 120;                          // 每 120ms 检查一次停止标志
+    const start = Date.now();
+    const step = () => {
+      if (aborted) return reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      const left = total - (Date.now() - start);
+      if (left <= 0) return resolve();
+      setTimeout(step, Math.min(tick, left));
+    };
+    setTimeout(step, Math.min(tick, total));
+  });
   const rnd = (a, b) => a + Math.random() * (b - a);
   const ri = (a, b) => Math.floor(rnd(a, b + 1));
   const norm = (t) => (t || "").replace(/\s+/g, " ").trim();
-  const send = (m) => chrome.runtime.sendMessage(m);
+  /* 所有输入类消息（点击/滚动/打字）在发出去之前都检查停止标志 ——
+   * 停止后一毫秒都不该再动页面。日志类消息不拦。 */
+  const send = (m) => {
+    if (aborted && m && m.t === "input") {
+      return Promise.reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    }
+    return chrome.runtime.sendMessage(m);
+  };
 
   const SEL = {
     article: 'article[data-testid="tweet"]',
@@ -133,6 +160,7 @@
 
   async function clickEl(el, opts = {}) {
     if (!el) return false;
+    checkAbort();                    // 停止后不再发起新的点击
     const r = await stableRect(el);
     if (r.width <= 0 || r.height <= 0) return false;
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
@@ -154,6 +182,7 @@
 
   async function scrollBy(notches) {
     // 正数向下、负数向上（看上文）；先把鼠标放到内容区再滚，和真人一致
+    checkAbort();
     const anchor = q(SEL.article) || q(SEL.cell) || document.body;
     const r = await stableRect(anchor);
     await send({ t: "input", op: "wheel",
@@ -830,6 +859,8 @@
   function noteComment(text) { COMMENT_GEN.pushHistory(text); }
 
   async function startSession() {
+    aborted = false;                       // 清掉上次停止留下的中断标志
+    stopLoop();                            // 清掉可能残留的旧定时器
     const beh = await getBeh();
     SOP.setExtraKeywords(beh.focus_keywords);   // 面板自定义的重点关键词生效
     ctx = { run: true, phase: beh.notif_enabled ? "notif" : "home",
@@ -877,8 +908,25 @@
     }) || null;
   }
 
+  /* 停止信号：停止时不仅设 ctx.run=false，还要让**正在执行的步骤立即中断**。
+   * 以前只设标志位，当前 stepXxx 已经在 await 里，会继续跑完整个步骤
+   * （可能几十秒，长的时候连带打开发帖框、评论全走完），用户看到的就是
+   * 「点了停止还在动」。
+   * 做法：全局 aborted 标志 + 可中断的 sleep()，步骤里任何等待点都会抛 AbortError。 */
+  class AbortError extends Error {
+    constructor() { super("stopped"); this.name = "AbortError"; }
+  }
+  // aborted 已在文件顶部声明（sleep 需要它），这里不再重复声明
+
+  function checkAbort() {
+    if (aborted) throw new AbortError();
+  }
+
   function stopSession(reason) {
+    aborted = true;                        // 先置中断标志，让进行中的步骤立刻停
+    stopLoop();                            // 停掉主循环定时器，不再空转
     if (ctx) { ctx.run = false; saveCtx(ctx); }
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
     stopStatsSync();
     logAct(`会话结束：${reason || "手动停止"}`);
     send({ t: "round-done" }).catch(() => {});
@@ -1617,11 +1665,13 @@
 
   // ---- 驱动 ----
 
-  let timer = null;
+  function stopLoop() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
   function loop() {
     if (timer) return;
     timer = setInterval(async () => {
-      if (!ctx || !ctx.run || busy) return;
+      if (!ctx || !ctx.run || aborted || busy) return;
       busy = true;
       try {
         if (Date.now() >= ctx.deadline) {
@@ -1631,8 +1681,10 @@
           return;
         }
         const beh = await getBeh();
+        checkAbort();
         // 恢复导航后的阶段：按当前 URL 校正
         if (ctx.phase === "home" && !onHome()) await goHome();
+        checkAbort();
         switch (ctx.phase) {
           case "home": await stepHome(beh); break;
           case "explore": await stepExplore(beh); break;
@@ -1643,7 +1695,11 @@
         }
         saveCtx(ctx);
       } catch (e) {
-        await logAct(`步骤异常：${e && e.message}`);
+        if (e && e.name === "AbortError") {
+          // 正常停止，不当作异常
+        } else {
+          await logAct(`步骤异常：${e && e.message}`);
+        }
       } finally {
         busy = false;
       }
