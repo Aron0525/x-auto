@@ -160,10 +160,17 @@
     const attHit = PURE_ATTITUDE.filter((w) => c.includes(w));
     let opScore;
     if (opHit.length === 0 && weakHit.length === 0) {
-      opScore = attHit.length ? 5 : 8;
-      reasons.push(attHit.length
-        ? `只有态度没有观点（"${attHit[0]}"）→ 观点分 ${opScore}/30`
-        : `看不出观点，像随口一句 → 观点分 ${opScore}/30`);
+      /* 没有观点词时看态度：
+       * 【用户要求】有态度也行，不该一刀切。
+       * 真实的好评论里，「这话扎心」「太真实了」这种就是人的正常反应，
+       * 只要长度够、能接住原帖情绪，就该给中等分而不是最低分。 */
+      if (attHit.length) {
+        opScore = c.length >= 10 ? 15 : 8;   // 态度 + 长度够 → 15
+        reasons.push(`只有态度（"${attHit[0]}"）没有明确观点 → 观点分 ${opScore}/30`);
+      } else {
+        opScore = 8;
+        reasons.push(`看不出观点，像随口一句 → 观点分 ${opScore}/30`);
+      }
     } else if (opHit.length === 0) {
       opScore = 12;
       reasons.push(`只有一个转折词（"${weakHit[0]}"），判断不明确 → 观点分 ${opScore}/30`);
@@ -177,11 +184,19 @@
       opScore = 30;
       reasons.push(`观点充分（${opHit.length} 个判断成分）→ 观点分 ${opScore}/30`);
     }
-    // 只有态度 + 短 = 没内容
-    if (attHit.length && opHit.length === 0 && c.length < 12)
-      return { pass: false, score: Math.min(score, 25), grade: "不合格",
-               reasons: [...reasons, "纯态度短句，信息量为零"],
-               fatal: "纯态度短句（如「说得对」「收藏了」）" };
+/* 只有态度、没有观点 → 不一定差。
+     * 【2026-11-19 用户反馈】「有态度也行」，不该一刀切。
+     * 现在只拦真正没信息量的：态度 + 极短（<8 字）+ 没接住原帖任何内容。
+     * 「这话扎心，我也有同感」这种虽然没观点，但接住了情绪、长度也够 → 放行。 */
+    if (attHit.length && opHit.length === 0) {
+      const tooShort = c.length < 8;
+      const noRelevance = relevanceScore(c, src) === 0;
+      if (tooShort && noRelevance)
+        return { pass: false, score: Math.min(score, 42), grade: "不合格",
+                 reasons: [...reasons, `只有态度且太短（${c.length} 字），也没接住原帖`],
+                 fatal: "纯态度短句（如「说得对」「收藏了」）" };
+      reasons.push(`只有态度（"${attHit[0]}"）没有明确观点 → 观点分按 ${opScore}/30 计`);
+    }
 
     // ---------- ③ 与帖相关度（25 分）----------
     /* 注意：整句模板不引用原帖短语，字面命中天然为 0。

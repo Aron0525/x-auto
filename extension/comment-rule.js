@@ -1,4 +1,4 @@
-/* comment-rule.js —— 评论规则独立窗口的逻辑
+﻿/* comment-rule.js —— 评论规则独立窗口的逻辑
  *
  * 存的位置和主控制台一致：chrome.storage.local 的 xa_settings
  * （提示词/模板也在里面，所以 content.js 的 getBeh 直接能读到）。
@@ -115,7 +115,7 @@ async function load() {
   $("comment_target_len").value = s.comment_target_len ?? 13;
   $("style").value = s.style || "normal";
   $("tone").value = s.tone || "friendly";
-  $("review_enabled").checked = s.review_enabled !== false;
+  $("review_enabled").checked = s.review_enabled === true;   // 默认关闭
   $("review_threshold").value = s.review_threshold ?? 60;
   $("review_banned").value = s.review_banned || "";
 
@@ -236,7 +236,7 @@ async function loadPosts() {
 // 审核用的行为参数（取界面当前值，未保存也能预览）
 function reviewBeh() {
   return {
-    review_enabled: $("review_enabled") ? $("review_enabled").checked : true,
+    review_enabled: $("review_enabled") ? $("review_enabled").checked : false,
     review_threshold: $("review_threshold") ? (parseInt($("review_threshold").value, 10) || 60) : 60,
     review_banned: $("review_banned") ? $("review_banned").value : "",
   };

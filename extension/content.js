@@ -927,7 +927,7 @@
       session_max_min: s.session_max_min ?? 45,
       session_jitter: s.session_jitter !== false,
       // 评论审核（不及格就跳过不发）
-      review_enabled: s.review_enabled !== false,
+      review_enabled: s.review_enabled === true,   // 默认关闭（用户要求先暂停审核）
       review_threshold: s.review_threshold ?? 60,
       review_banned: s.review_banned || "",
       like_prob: s.like_prob ?? 0.85, comment_prob: s.comment_prob ?? 0.85,
@@ -1011,7 +1011,9 @@
     if (!gen) return "来源未知";
     if (gen.source === "llm")
       return (`模型 ${gen.model || ""}`).trim() + (gen.attempts > 1 ? `（第 ${gen.attempts} 次才过）` : "");
-    if (gen.source === "template") return "⚠ 模板降级（模型没给出合格句子）";
+    if (gen.source === "llm_failed") return "模型 3 次不合格";
+    if (gen.source === "no_api") return "未配 API Key";
+    if (gen.source === "template") return "⚠ 模板（已停用，不该出现）";
     return gen.source || "来源未知";
   }
 
@@ -1440,7 +1442,7 @@
       /* 【发送前审核】用户要求：不合格就跳过，绝不发出去。
        * 之前只有 validateComment 那几道粗筛，挡不住「只有态度没观点」「和帖子不搭」
        * 这类质量问题。这里用 review.js 打总分，不过阈值就整条跳过。 */
-      const rev = text && beh.review_enabled !== false ? COMMENT_REVIEW.reviewComment(text, { text: post.text, ctxReply: post.ctxReply, myReplies: post.myReplies, scene: COMMENT_GEN.classifyPost(post.text || "") }, beh) : null;
+      const rev = text && beh.review_enabled === true ? COMMENT_REVIEW.reviewComment(text, { text: post.text, ctxReply: post.ctxReply, myReplies: post.myReplies, scene: COMMENT_GEN.classifyPost(post.text || "") }, beh) : null;
       if (text && rev && !rev.pass) {
         await logAct(`评论不通过审核（${rev.score} 分 · ${rev.fatal}）→ 跳过这条，不发`, "skip");
         for (const line of rev.reasons.slice(0, 3)) await logAct(`  · ${line}`, "skip");
@@ -1462,7 +1464,9 @@
           await logAct(`✗ 评论失败：${r.error}`);
         }
       } else {
-        await logAct(`评论跳过：${gen.error || "没有合格文案"}`);
+        /* 模型没给出合格句子（或没配 API Key）→ 这条不评论。
+         * 模板兜底已取消，宁可少发也不发重复模板句。 */
+        await logAct(`⏭ 评论跳过：${gen.error || "没有合格文案"}`, "skip");
       }
     }
 
@@ -1559,7 +1563,7 @@
         const gen = await COMMENT_GEN.generate(await withAntiRepeat(t), beh, beh.llm);
         const text = (gen.text || "").trim();
         // 【发送前审核】不过关就跳过这篇，继续下一篇
-        const rev = text && beh.review_enabled !== false ? COMMENT_REVIEW.reviewComment(text,
+        const rev = text && beh.review_enabled === true ? COMMENT_REVIEW.reviewComment(text,
           { text: t.text, myReplies: t.myReplies, scene: COMMENT_GEN.classifyPost(t.text || "") }, beh) : null;
         if (text && rev && !rev.pass) {
           await logAct(`主页互动：评论不通过审核（${rev.score} 分 · ${rev.fatal}）→ 跳过`, "skip");
@@ -1588,6 +1592,9 @@
             await waitContent(1, 15000, "作者主页");
           }
           continue;
+        } else {
+          // 模型没给出合格句子（模板兜底已取消）→ 这篇不评论，但仍可能点赞
+          await logAct(`⏭ 主页互动：跳过评论（${gen.error || "没有合格文案"}）`, "skip");
         }
       }
       if (canLike) {
@@ -1943,7 +1950,7 @@
         beh, beh.llm);
       const text = (gen.text || "").trim();
       // 通知回复也是公开发言，同样要过审核
-      const rev = text && beh.review_enabled !== false ? COMMENT_REVIEW.reviewComment(text,
+      const rev = text && beh.review_enabled === true ? COMMENT_REVIEW.reviewComment(text,
         { text: post.ctxReply, ctxReply: post.ctxReply, myReplies: post.myReplies, scene: COMMENT_GEN.classifyPost(post.ctxReply || "") }, beh) : null;
       if (text && rev && !rev.pass) {
         await logAct(`回复不通过审核（${rev.score} 分 · ${rev.fatal}）→ 跳过`, "skip");

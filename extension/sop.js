@@ -234,7 +234,8 @@ globalThis.SOP = (() => {
       if (c.length < 4) return [false, "太短，表达不出观点"];
       if (["互关", "回关", "互赞", "关注我", "求关注"].some((k) => c.includes(k)))
         return [false, "涉及互动交换（会被平台判定刷量）"];
-      for (const bad of FABRICATION) if (c.includes(bad)) return [false, `疑似编造亲历：${bad}`];
+      // 【已删除】编造亲历检查（FABRICATION）：用户要求去掉。
+      // 评论里出现「我试过」「我朋友」是正常表达，不该当错误拦。
       const { soft } = commentLength(beh);
       const note = c.length > soft ? ` · 略长于目标 ${soft} 字但句子完整，放行` : "";
       return [true, `通过（我的规则 · ${c.length} 字${note}）`];

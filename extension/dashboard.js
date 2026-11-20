@@ -1,4 +1,4 @@
-/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
+﻿/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
 
 const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "session_min_min", "session_max_min", "typing_ms", "follow_per_session",
@@ -27,7 +27,7 @@ const DEFAULTS = {
   follow_gap_min: 60, follow_gap_max: 180, follow_per_hour: 8,
   tone: "friendly", style: "normal", notif_enabled: true,
   // 评论审核：不过关就跳过不发。60 分是「合格线」，低于它一律不发。
-  review_enabled: true, review_threshold: 60, review_banned: "",
+  review_enabled: false, review_threshold: 60, review_banned: "",
   llm_key: "", llm_base: "https://api.deepseek.com/v1", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,
 };

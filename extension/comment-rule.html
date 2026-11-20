@@ -157,13 +157,14 @@
   </div>
 
   <div class="card">
-    <h2>发送前审核（不合格直接跳过）</h2>
+    <h2>发送前审核（默认关闭）</h2>
     <p class="desc">
-      每条评论<b>生成后、发送前</b>都会被打一次分。分数不到及格线就跳过这条，不发出去。
+      打开后，每条评论<b>生成后、发送前</b>都会被评分，不到及格线就跳过不发。
+      <b>现在默认关闭</b>——评论直接按提示词由模型生成，不做二次拦截，少一层误杀。
     </p>
     <div class="row"><label>开启审核</label>
       <input type="checkbox" id="review_enabled">
-      <span class="hint">关掉就是生成什么发什么（不建议）</span></div>
+      <span class="hint">默认关闭。打开后不合格的评论会被丢弃</span></div>
     <div class="row"><label>及格线</label>
       <input type="number" id="review_threshold" min="0" max="100" step="5">
       <span class="hint">默认 60。调高更严格，调低更宽松</span></div>
