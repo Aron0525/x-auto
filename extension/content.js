@@ -930,6 +930,8 @@
       review_enabled: s.review_enabled === true,   // 默认关闭（用户要求先暂停审核）
       review_threshold: s.review_threshold ?? 60,
       review_banned: s.review_banned || "",
+      // 审核词表（评论规则窗口里改的，null = 用代码出厂值）
+      review_rules: s.review_rules || null,
       like_prob: s.like_prob ?? 0.85, comment_prob: s.comment_prob ?? 0.85,
       expand_prob: s.expand_prob ?? 0.9, bookmark_prob: s.bookmark_prob ?? 0.3,
       explore_prob: s.explore_prob ?? 0.5,
@@ -1022,6 +1024,12 @@
     stopLoop();                            // 清掉可能残留的旧定时器
     const beh = await getBeh();
     SOP.setExtraKeywords(beh.focus_keywords);   // 面板自定义的重点关键词生效
+    /* 审核词表：评论规则窗口里改过的（增删改）灌进审核引擎。
+     * 没改过的话 beh.review_rules 是 null → setRules 保持出厂默认。 */
+    if (typeof COMMENT_REVIEW !== "undefined" && COMMENT_REVIEW.setRules && beh.review_rules) {
+      COMMENT_REVIEW.setRules(beh.review_rules);
+      await logAct(`已加载审核词表（规则窗口里自定义过的部分：${Object.keys(beh.review_rules).filter((k) => beh.review_rules[k]).join("、") || "无"}）`, "judge");
+    }
 
     /* 会话时长也随机：固定跑 30 分钟整，在平台侧看就是脚本
      * （每次在线时长方差为 0，人做不到）。所以在 [min, max] 里抽一个值。

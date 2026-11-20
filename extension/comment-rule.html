@@ -71,6 +71,27 @@
   .tip { background: #1c2b3a; border-left: 3px solid #1d9bf0; border-radius: 6px;
          padding: 9px 12px; font-size: 12px; color: #aab8c2; margin: 10px 0; }
   .tip.warn { background: #2b2510; border-left-color: #ffd400; }
+
+  /* ---- 审核词表编辑器 ---- */
+  .wl { background: #0d141a; border: 1px solid #38444d; border-radius: 10px;
+        padding: 10px 12px; margin-bottom: 12px; }
+  .wlHead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .wlHead b { font-size: 12.5px; color: #e7e9ea; }
+  .wlHead .use { color: #71767b; font-size: 11px; flex: 1; min-width: 200px; }
+  .wlChips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; min-height: 26px; }
+  .chip { display: inline-flex; align-items: center; gap: 3px; background: #1e2732;
+          border: 1px solid #38444d; border-radius: 6px; padding: 2px 4px 2px 8px;
+          font-size: 12px; color: #e7e9ea; }
+  .chip.mine { border-color: #00ba7c66; }
+  .chip x { cursor: pointer; color: #71767b; font-style: normal; padding: 0 3px;
+            border-radius: 4px; line-height: 1; font-size: 13px; }
+  .chip x:hover { color: #f9158b; background: #f9158b22; }
+  .wlAdd { display: flex; gap: 6px; }
+  .wlAdd input { flex: 1; background: #0d141a; border: 1px solid #38444d; border-radius: 6px;
+                 color: #e7e9ea; padding: 4px 8px; font-size: 12px; font-family: inherit; }
+  .wlAdd input:focus { outline: none; border-color: #1d9bf0; }
+  .wlAdd button { padding: 4px 12px; font-size: 12px; border-radius: 6px; }
+  .wlStat { color: #71767b; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -157,33 +178,41 @@
   </div>
 
   <div class="card">
-    <h2>发送前审核（默认关闭）</h2>
+    <h2>发送前审核</h2>
     <p class="desc">
-      打开后，每条评论<b>生成后、发送前</b>都会被评分，不到及格线就跳过不发。
-      <b>现在默认关闭</b>——评论直接按提示词由模型生成，不做二次拦截，少一层误杀。
+      打开开关后，每条评论<b>生成后、发送前</b>会被打分，不到及格线就跳过不发。
+      下面的词表可以随意<b>增删改</b>——改完点最下面的「保存设置」生效。
     </p>
     <div class="row"><label>开启审核</label>
       <input type="checkbox" id="review_enabled">
-      <span class="hint">默认关闭。打开后不合格的评论会被丢弃</span></div>
+      <span class="hint">默认关闭。关掉就是模型写什么发什么</span></div>
     <div class="row"><label>及格线</label>
       <input type="number" id="review_threshold" min="0" max="100" step="5">
-      <span class="hint">默认 60。调高更严格，调低更宽松</span></div>
-    <div class="row"><label>额外禁用词</label>
-      <input type="text" id="review_banned" placeholder="用逗号分隔，例如：其实,说白了">
-      <span class="hint">内置已禁直角引号「」、议论文腔、引流词</span></div>
+      <span class="hint">默认 60 分。调高更严格，调低更宽松</span></div>
 
     <div class="tip">
-      <b>评分怎么算（满分 100）</b><br>
-      · <b>观点强度 30 分</b>：有没有判断、因果、条件、取舍。只说「说得对」「收藏了」→ 5 分<br>
-      · <b>与帖相关度 25 分</b>：是否接住帖子里的具体内容，而不是放哪都能用<br>
-      · <b>人味 20 分</b>：有没有 AI 腔（"综上所述"）、有没有编造亲历<br>
-      · <b>长度完整度 15 分</b>：太短没信息，太长像论文，结尾不能是逗号或悬空连接词<br>
-      · <b>复述原帖 扣 35</b>：把作者的话照搬回来说成自己的<br>
-      · <b>和老评论重复 扣 25~30</b>：和发过的、或给同一作者发过的太像
+      <b>七张词表分别管什么</b><br>
+      · <b>一票否决词</b>：评论里出现任意一个 → 直接不发，不管多少分<br>
+      · <b>观点词</b>：命中一个就能拿观点分（判断、因果、转折、取舍都算）<br>
+      · <b>态度词</b>：没有观点时，有明确情绪反应也算及格<br>
+      · <b>AI 腔词</b>：出现就扣人味分（不会一票否决）<br>
+      · <b>编造亲历词</b>：出现就扣人味分<br>
+      · <b>话题实词</b>：判断评论是否接住了帖子的具体内容<br>
+      · <b>场景词</b>：判断评论和帖子是否同属一个话题方向
     </div>
-    <div class="tip warn">
-      <b>一票否决</b>（不管多少分都不发）：含直角引号「」、议论文腔（综上所述/首先/其次）、
-      引流词（互关 / @ / # / 点击链接）、冒充 AI、纯符号表情、纯态度短句。
+
+    <div id="wfBanned" class="wl"></div>
+    <div id="wfOpinion" class="wl"></div>
+    <div id="wfAttitude" class="wl"></div>
+    <div id="wfAi" class="wl"></div>
+    <div id="wfFab" class="wl"></div>
+    <div id="wfTopic" class="wl"></div>
+    <div id="wfScene" class="wl"></div>
+
+    <div class="row" style="margin-top:6px">
+      <button class="ghost" id="wlResetAll" style="padding:6px 14px;font-size:12px;border-radius:8px">
+        全部恢复出厂词表</button>
+      <span class="hint" id="wlMsg"></span>
     </div>
   </div>
 

@@ -12,7 +12,7 @@
 const $ = (id) => document.getElementById(id);
 const FIELDS = ["comment_rule", "comment_prob", "comment_prob_cap", "dedup_comment",
                 "focus_keywords", "comment_target_len", "style", "tone",
-                "comment_templates", "review_enabled", "review_threshold", "review_banned"];
+                "comment_templates", "review_enabled", "review_threshold"];
 const PROB = ["comment_prob", "comment_prob_cap"];
 const NUM = ["comment_target_len", "review_threshold"];
 const CHK = ["dedup_comment", "review_enabled"];
@@ -117,7 +117,12 @@ async function load() {
   $("tone").value = s.tone || "friendly";
   $("review_enabled").checked = s.review_enabled === true;   // 默认关闭
   $("review_threshold").value = s.review_threshold ?? 60;
-  $("review_banned").value = s.review_banned || "";
+
+  /* 审核词表：读回用户改过的版本，没改过的用出厂值 */
+  wlLoad(s.review_rules || null);
+
+  /* 把词表灌进审核引擎，这样下面的「试效果」用的是当前界面上的词 */
+  syncRulesToEngine();
 
   ensurePrompts(s);
   renderPromptSelect();
@@ -238,8 +243,184 @@ function reviewBeh() {
   return {
     review_enabled: $("review_enabled") ? $("review_enabled").checked : false,
     review_threshold: $("review_threshold") ? (parseInt($("review_threshold").value, 10) || 60) : 60,
-    review_banned: $("review_banned") ? $("review_banned").value : "",
+    review_banned: "",   // 已并入「一票否决词」词表，不再是单独文本框
   };
+}
+
+/* ================= 审核词表编辑器 =================
+ *
+ * 每张词表都做成「标签(chip) + 输入框」：
+ *   · 点标签上的 ×  → 删掉这个词
+ *   · 输入框回车/点「添加」→ 加词
+ *   · 出厂词表里被删掉的不再显示；自己加的高亮成绿色
+ *
+ * 保存时把 7 张表的**当前完整内容**写进 xa_settings.review_rules，
+ * 运行时 content.js 会调用 COMMENT_REVIEW.setRules() 灌进去。
+ * 所以「删掉的词」会被真正记住——不是靠「额外禁用词」这种叠加。
+ */
+
+// 每张表的定义：key 对应存储字段，getDefault 取出厂值
+const WL_DEFS = [
+  { key: "banned",     mount: "wfBanned",    title: "一票否决词",
+    use: "出现任意一个 → 这条评论直接不发",
+    getDefault: () => COMMENT_REVIEW.DEFAULT_BANNED },
+  { key: "opinionWords", mount: "wfOpinion", title: "观点词",
+    use: "命中任意一个就能拿观点分（判断/因果/转折/取舍）",
+    getDefault: () => COMMENT_REVIEW.DEFAULT_OPINION_WORDS },
+  { key: "attitude",   mount: "wfAttitude",  title: "态度词",
+    use: "没有观点时，有明确情绪反应也算及格",
+    getDefault: () => COMMENT_REVIEW.DEFAULT_ATTITUDE },
+  { key: "aiFlavor",   mount: "wfAi",        title: "AI 腔 / 书面语词",
+    use: "出现就扣人味分，不会一票否决",
+    getDefault: () => COMMENT_REVIEW.DEFAULT_AI_FLAVOR },
+  { key: "fabrication", mount: "wfFab",      title: "编造亲历词",
+    use: "出现就扣人味分",
+    getDefault: () => COMMENT_REVIEW.DEFAULT_FABRICATION },
+  { key: "topicWords", mount: "wfTopic",     title: "话题实词",
+    use: "判断评论是否接住帖子的具体内容",
+    getDefault: () => (globalThis.COMMENT_REVIEW.DEFAULT_TOPIC_WORDS || []) },
+  { key: "scene",      mount: "wfScene",     title: "场景词",
+    use: "判断评论和帖子是否同属一个话题方向（格式：场景=词,词）",
+    getDefault: () => {
+      const obj = globalThis.COMMENT_REVIEW.DEFAULT_SCENE_WORDS || {};
+      return Object.entries(obj)
+        .filter(([, ws]) => ws && ws.length)
+        .map(([k, ws]) => `${k}=${ws.join(",")}`);
+    } },
+];
+
+let WL_STATE = {};        // { key: [词...] }
+let WL_DEFAULT = {};      // { key: Set(出厂词) }
+
+function wlInit() {
+  WL_DEFAULT = {};
+  WL_STATE = {};
+  for (const def of WL_DEFS) {
+    const base = def.getDefault() || [];
+    WL_DEFAULT[def.key] = new Set(base);
+    WL_STATE[def.key] = base.slice();
+  }
+}
+
+/* 渲染一张词表 */
+function wlRender(key) {
+  const def = WL_DEFS.find((d) => d.key === key);
+  const box = $(def.mount);
+  if (!box) return;
+  const words = WL_STATE[key] || [];
+  const shown = words.slice(0, 400);          // 词太多时只显示前 400 个
+  const chips = shown.map((w) => {
+    const isMine = !WL_DEFAULT[key].has(w);
+    return `<span class="chip${isMine ? " mine" : ""}" title="${isMine ? "你自己加的" : "出厂词"}">` +
+           `${wlEsc(w)}<x data-k="${key}" data-w="${wlEsc(w)}">×</x></span>`;
+  }).join("");
+  const more = words.length > 400
+    ? `<span class="wlStat">…还有 ${words.length - 400} 个没显示</span>` : "";
+  box.innerHTML =
+    `<div class="wlHead"><b>${def.title}</b>` +
+      `<span class="use">${def.use}</span>` +
+      `<span class="wlStat" id="wlStat_${key}">${words.length} 个</span></div>` +
+    `<div class="wlChips">${chips || '<span class="wlStat">（空的，这条规则不生效）</span>'}${more}</div>` +
+    `<div class="wlAdd">` +
+      `<input type="text" id="wlIn_${key}" placeholder="输入一个词，按回车添加">` +
+      `<button class="ghost" data-addk="${key}">添加</button>` +
+      `<button class="ghost" data-resetk="${key}">恢复这张表</button>` +
+    `</div>`;
+
+  // 绑定：添加
+  const inp = $(`wlIn_${key}`);
+  const doAdd = () => {
+    const v = String(inp.value || "").trim();
+    if (!v) return;
+    // 允许一次输入多个（逗号/换行分隔）
+    const parts = v.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean);
+    let added = 0;
+    for (const p of parts) {
+      if (!WL_STATE[key].includes(p)) { WL_STATE[key].push(p); added++; }
+    }
+    inp.value = "";
+    if (added) { wlRender(key); syncRulesToEngine(); $(`wlIn_${key}`).focus(); }
+    else { $(`wlMsg`).textContent = `「${parts[0]}」已经在表里了`; }
+  };
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); doAdd(); }
+  });
+  box.querySelector(`[data-addk="${key}"]`).addEventListener("click", doAdd);
+  box.querySelector(`[data-resetk="${key}"]`).addEventListener("click", () => {
+    WL_STATE[key] = Array.from(WL_DEFAULT[key]);
+    wlRender(key);
+    syncRulesToEngine();                    // 恢复后立即生效
+    $(`wlMsg`).textContent = `「${def.title}」已恢复出厂 ${WL_STATE[key].length} 个词`;
+  });
+  // 绑定：删除
+  box.querySelectorAll("x[data-w]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const w = el.getAttribute("data-w");
+      WL_STATE[key] = WL_STATE[key].filter((x) => x !== w);
+      wlRender(key);
+      syncRulesToEngine();                  // 删除后立即生效
+    });
+  });
+}
+
+function wlEsc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function wlRenderAll() {
+  for (const def of WL_DEFS) wlRender(def.key);
+}
+
+/* 从存储读回用户改过的词表。没改过的保持出厂值。 */
+function wlLoad(saved) {
+  wlInit();
+  if (!saved || typeof saved !== "object") { wlRenderAll(); return; }
+  for (const def of WL_DEFS) {
+    if (Array.isArray(saved[def.key])) {
+      WL_STATE[def.key] = saved[def.key].map((x) => String(x)).filter(Boolean);
+    }
+  }
+  wlRenderAll();
+}
+
+/* 收集当前词表，返回要写进存储的对象 */
+function wlCollect() {
+  const out = {};
+  for (const def of WL_DEFS) {
+    const cur = WL_STATE[def.key] || [];
+    const base = WL_DEFAULT[def.key];
+    // 和出厂值一样就不存，省空间也便于以后改出厂值时自动跟着变
+    const same = cur.length === base.size && cur.every((w) => base.has(w));
+    if (!same) out[def.key] = cur;
+    else out[def.key] = null;      // null = 用出厂值
+  }
+  return out;
+}
+
+/* 场景词是特殊格式（场景=词,词），单独解析成对象 */
+function wlParseScene(words) {
+  const out = {};
+  for (const line of words || []) {
+    const m = String(line).match(/^\s*([A-Za-z_]+)\s*[=＝]\s*(.+)$/);
+    if (!m) continue;
+    out[m[1]] = m[2].split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+  }
+  return out;
+}
+
+/* 把界面上当前的词表灌进审核引擎（预览时立即生效，不用先保存） */
+function syncRulesToEngine() {
+  if (typeof COMMENT_REVIEW === "undefined" || !COMMENT_REVIEW.setRules) return;
+  COMMENT_REVIEW.setRules({
+    banned: WL_STATE.banned,
+    opinionWords: WL_STATE.opinionWords,
+    attitude: WL_STATE.attitude,
+    aiFlavor: WL_STATE.aiFlavor,
+    fabrication: WL_STATE.fabrication,
+    topicWords: WL_STATE.topicWords,
+    scene: wlParseScene(WL_STATE.scene),
+  });
 }
 
 function renderPosts(results) {
@@ -404,6 +585,10 @@ async function save() {
   // 如果当前就是内置默认，清掉以跟随代码默认值更新
   if (s.comment_prompt.trim() === COMMENT_GEN.DEFAULT_MINE_PROMPT.trim()) delete s.comment_prompt;
 
+  /* 审核词表：存当前完整内容。
+   * 和出厂值一致的表存 null，这样以后改代码里的出厂词表能自动跟着变。 */
+  s.review_rules = wlCollect();
+
   // 合并保存：别把 API Key 等其它字段抹掉
   const cur2 = (await chrome.storage.local.get(["xa_settings"])).xa_settings || {};
   await chrome.storage.local.set({ xa_settings: { ...cur2, ...s } });
@@ -413,11 +598,22 @@ async function save() {
       ` · 提示词「${cur ? cur.name : "默认"}」` + (n ? ` · 模板 ${n} 条` : " · 用内置模板"), "on");
   setStatus('<span class="pill on">已保存</span> 下一轮会话生效', "");
   renderPromptSelect();
+  syncRulesToEngine();       // 保存后立即生效，不用重开窗口
+  const cnt = WL_DEFS.map((d) => `${d.title} ${(WL_STATE[d.key] || []).length}`).join(" · ");
+  $("wlMsg").textContent = "已保存：" + cnt;
 }
 
 // ---------------- 绑定 ----------------
 
 $("comment_rule").onchange = () => { $("ruleHint").textContent = RULE_HINT[$("comment_rule").value]; };
+
+/* 恢复全部出厂词表 */
+$("wlResetAll").onclick = () => {
+  wlInit();
+  wlRenderAll();
+  syncRulesToEngine();
+  $("wlMsg").textContent = "已全部恢复出厂词表（点保存生效）";
+};
 
 // 提示词：切换 / 新建 / 删除
 $("promptPreset").onchange = () => {

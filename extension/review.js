@@ -21,6 +21,12 @@
   // ---------- 一票否决：出现这些直接不发 ----------
   // 用户要求「评论不能出现「」」——中文直角引号会把原帖短语包起来，
   // 一眼就能看出是机器抓取的，所以默认禁用。
+  /* ============ 词表：可被设置覆盖 ============
+   * 用户要求「规则要能在界面里改、加、删」，所以每一张词表都分两份：
+   *   DEFAULT_xxx —— 代码里的出厂值（改代码才变）
+   *   运行时值    —— 优先读设置里的 xxx，没有就用出厂值
+   * 通过 setRules() 一次性灌进来；不调就用默认，行为和以前一致。
+   */
   const DEFAULT_BANNED = [
     "「", "」",              // 直角引号包裹原帖短语 ← 用户明确不要
     "综上所述", "总的来说", "值得注意的是", "需要指出的是",
@@ -32,13 +38,13 @@
   ];
 
   // 编造亲历：说了自己没做过的事
-  const FABRICATION = [
+  const DEFAULT_FABRICATION = [
     "我测过", "我试过", "我用过", "我做过", "我朋友", "我同事",
     "我公司", "我团队", "亲身经历", "亲测",
   ];
 
   // AI 味 / 模板腔：出现就扣分（不是一票否决，可能只是用词稍微书面）
-  const AI_FLAVOR = [
+  const DEFAULT_AI_FLAVOR = [
     "总的来说", "总体而言", "不难发现", "由此可见", "众所周知",
     "值得一提的是", "不可否认", "毋庸置疑", "综上所述",
     "在这个", "随着", "背景下", "维度", "层面", "赋能", "抓手",
@@ -46,7 +52,7 @@
   ];
 
   // 观点词：有判断、有因果、有条件、有取舍
-  const OPINION_WORDS = [
+  const DEFAULT_OPINION_WORDS = [
     // 判断
     "我觉得", "我认为", "说实话", "老实说", "其实", "确实", "未必",
     "不一定", "恐怕", "估计", "看起来", "感觉", "说明", "意味着", "证明",
@@ -65,11 +71,74 @@
   ];
 
   // 纯情绪/纯态度：只有这些 = 没观点
-  const PURE_ATTITUDE = [
+  const DEFAULT_ATTITUDE = [
     "收藏了", "学到了", "受教了", "说得好", "有道理", "赞同",
     "支持", "加油", "厉害", "牛", "赞", "同感", "真实",
     "太对了", "说透了", "一针见血", "深有同感",
   ];
+
+  // 话题实词：帖子里出现、评论里也出现的双字以上实词
+  const DEFAULT_TOPIC_WORDS = ["订阅", "付费", "用户", "收入", "营收", "亏损", "回撤", "定投",
+    "仓位", "裁员", "简历", "面试", "求职", "副业", "兼职",
+    "推广", "分发", "产品", "开发", "创业", "招人", "招聘",
+    "团队", "员工", "内容", "选题", "写作", "读者", "更新",
+    "成本", "收益", "风险", "价格", "客户", "流量", "平台",
+    "方案", "方法", "流程", "工具", "效率", "时间"];
+
+  /* 运行时生效的词表。setRules() 可以整体替换其中任意几张。 */
+  let BANNED = DEFAULT_BANNED.slice();
+  let FABRICATION = DEFAULT_FABRICATION.slice();
+  let AI_FLAVOR = DEFAULT_AI_FLAVOR.slice();
+  let OPINION_WORDS = DEFAULT_OPINION_WORDS.slice();
+  let PURE_ATTITUDE = DEFAULT_ATTITUDE.slice();
+  let TOPIC_WORDS_RT = null;      // null = 用内置默认
+  let SCENE_WORDS_RT = null;      // null = 用内置默认
+
+  /* 从设置里灌词表。传 null/undefined 的项保持默认不变。
+   * 传空数组 = 主动清空（用户真的想全删）。 */
+  function setRules(cfg) {
+    const pick = (v, fallback) => {
+      if (v == null) return fallback.slice();
+      if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
+      if (typeof v === "string")
+        return v.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean);
+      return fallback.slice();
+    };
+    BANNED = pick(cfg && cfg.banned, DEFAULT_BANNED);
+    FABRICATION = pick(cfg && cfg.fabrication, DEFAULT_FABRICATION);
+    AI_FLAVOR = pick(cfg && cfg.aiFlavor, DEFAULT_AI_FLAVOR);
+    OPINION_WORDS = pick(cfg && cfg.opinionWords, DEFAULT_OPINION_WORDS);
+    PURE_ATTITUDE = pick(cfg && cfg.attitude, DEFAULT_ATTITUDE);
+    TOPIC_WORDS_RT = (cfg && cfg.topicWords) ? pick(cfg.topicWords, []) : null;
+    /* 场景词格式：{ vent: ["亏","回撤"], content: [...] }。
+     * 兼容 UI 存的扁平数组格式：["vent=亏,回撤", "content=选题,读者"]，
+     * content.js 直接透传时也能正确解析。传 null 用内置默认。 */
+    let sceneObj = null;
+    if (cfg && cfg.scene != null) {
+      if (Array.isArray(cfg.scene)) {
+        sceneObj = {};
+        for (const line of cfg.scene) {
+          const m = String(line).match(/^\s*([A-Za-z_]+)\s*[=＝]\s*(.+)$/);
+          if (m) sceneObj[m[1]] = m[2].split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+        }
+      } else if (typeof cfg.scene === "object") {
+        sceneObj = cfg.scene;
+      }
+    }
+    SCENE_WORDS_RT = sceneObj && Object.keys(sceneObj).length ? sceneObj : null;
+  }
+
+  function getRules() {
+    return {
+      banned: BANNED.slice(),
+      fabrication: FABRICATION.slice(),
+      aiFlavor: AI_FLAVOR.slice(),
+      opinionWords: OPINION_WORDS.slice(),
+      attitude: PURE_ATTITUDE.slice(),
+      topicWords: TOPIC_WORDS_RT ? TOPIC_WORDS_RT.slice() : null,
+      scene: SCENE_WORDS_RT,
+    };
+  }
 
   // 口语/人味标志：像真人随手打的
   const HUMAN_MARKERS = [
@@ -108,12 +177,7 @@
     for (const g of grams) if (c.includes(g)) hit++;
 
     // ② 话题实词：帖子里出现、评论里也出现的双字以上实词
-    const TOPIC_WORDS = ["订阅", "付费", "用户", "收入", "营收", "亏损", "回撤", "定投",
-                         "仓位", "裁员", "简历", "面试", "求职", "副业", "兼职",
-                         "推广", "分发", "产品", "开发", "创业", "招人", "招聘",
-                         "团队", "员工", "内容", "选题", "写作", "读者", "更新",
-                         "成本", "收益", "风险", "价格", "客户", "流量", "平台",
-                         "方案", "方法", "流程", "工具", "效率", "时间"];
+    const TOPIC_WORDS = TOPIC_WORDS_RT || DEFAULT_TOPIC_WORDS;
     let topicHit = 0;
     for (const w of TOPIC_WORDS) if (src.includes(w) && c.includes(w)) topicHit++;
 
@@ -133,7 +197,9 @@
     const reasons = [];
     let score = 100;
 
-    const banned = uniq([...(beh && beh.review_banned ? splitList(beh.review_banned) : []), ...DEFAULT_BANNED]);
+    /* 禁用词 = 界面上的「额外禁用词」+ 词表里勾选的。
+     * beh.review_banned 是文本框里临时加的，BANNED 是 UI 管理的完整词表。 */
+    const banned = uniq([...(beh && beh.review_banned ? splitList(beh.review_banned) : []), ...BANNED]);
     const threshold = clamp(beh && beh.review_threshold != null ? Number(beh.review_threshold) : 60, 0, 100);
 
     // ---------- ① 一票否决 ----------
@@ -308,10 +374,11 @@
 
   function guessSceneLike(comment) {
     const c = String(comment || "");
+    const words = SCENE_WORDS_RT || SCENE_WORDS;
     let best = "", bestN = 0;
-    for (const [scene, words] of Object.entries(SCENE_WORDS)) {
-      if (!words.length) continue;
-      const n = words.reduce((k, w) => k + (c.includes(w) ? 1 : 0), 0);
+    for (const [scene, list] of Object.entries(words)) {
+      if (!list || !list.length) continue;
+      const n = list.reduce((k, w) => k + (c.includes(w) ? 1 : 0), 0);
       if (n > bestN) { bestN = n; best = scene; }
     }
     return bestN > 0 ? best : "";
@@ -360,6 +427,11 @@
 
   globalThis.COMMENT_REVIEW = {
     reviewComment, relevanceScore, echoesSrc, sim,
-    DEFAULT_BANNED, FABRICATION, AI_FLAVOR, OPINION_WORDS, PURE_ATTITUDE, HUMAN_MARKERS,
+    setRules, getRules,                       // ← 界面改词表用这两个
+    DEFAULT_BANNED, DEFAULT_FABRICATION, DEFAULT_AI_FLAVOR,
+    DEFAULT_OPINION_WORDS, DEFAULT_ATTITUDE, DEFAULT_TOPIC_WORDS,
+    DEFAULT_SCENE_WORDS: SCENE_WORDS, HUMAN_MARKERS,
+    // 兼容旧名字
+    FABRICATION, AI_FLAVOR, OPINION_WORDS, PURE_ATTITUDE,
   };
 })();
