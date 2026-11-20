@@ -645,17 +645,15 @@ globalThis.COMMENT_GEN = (() => {
           feedback = `\n\n【上一版被否原因】${why}\n请重写：必须直接引用或复述原帖里的一个具体词/细节，` +
                      `让别人看得出你只对这条帖子才能说这句话。`;
       }
-      // LLM 两版不合格 → 试模板
-      const tpl = template(post);
-      const [okT, whyT] = SOP.validateComment(tpl, post);
-      return { text: okT ? tpl : "", source: "template",
-               error: okT ? "LLM 不合格，退回模板" : `模板也未过校验：${whyT}` };
+      // 【已取消模板兜底】模型两版不合格 → 这条跳过，不再退回固定模板
+      return { text: "", source: "llm_failed",
+               error: "模型两次都没给出合格评论，这条跳过（模板兜底已取消）" };
     }
 
-    const tpl = template(post);
-    const [ok, why] = SOP.validateComment(tpl, post);
-    return { text: ok ? tpl : "", source: "template",
-             ...(ok ? { note: "未配置密钥，模板兜底" } : { error: `模板未通过 SOP 校验：${why}` }) };
+    /* 没配 API Key（SOP 旧模式）：同样直接跳过，不用模板凑。
+     * 用户要求：评论完全由模型按提示词生成，一条模板都不出现。 */
+    return { text: "", source: "no_api",
+             error: "没配 API Key，无法生成评论 → 这条跳过（模板兜底已取消）" };
   }
 
   /* 我的规则：短评生成。LLM 优先生成，失败/不合格退回短句模板。

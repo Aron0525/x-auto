@@ -1,4 +1,4 @@
-﻿/* comment-rule.js —— 评论规则独立窗口的逻辑
+/* comment-rule.js —— 评论规则独立窗口的逻辑
  *
  * 存的位置和主控制台一致：chrome.storage.local 的 xa_settings
  * （提示词/模板也在里面，所以 content.js 的 getBeh 直接能读到）。
@@ -339,25 +339,43 @@ async function generateAll(useLlm) {
   renderPosts([]);
 
   const results = [];
+  let lastErr = "";                 // 最后一条失败原因，批量结束时显示
+  let failCount = 0;
   for (let k = 0; k < targets.length; k++) {
     const i = targets[k];
     $("genMsg").textContent = `生成中… ${k + 1}/${targets.length}`;
     try {
       let r = "";
       if (useLlm) {
+        /* generateMine(post, body, beh, llmCfg) —— 第二个参数是**帖子正文**，
+         * 不是提示词。以前这里传了 $("comment_prompt").value，导致模型拿到的
+         * "帖子内容"其实是提示词本身，生成结果完全跑偏。 */
+        const beh2 = Object.assign({}, beh, {
+          // 预览时用窗口里当前编辑的提示词（还没保存也能试）
+          comment_prompt: $("comment_prompt") ? $("comment_prompt").value : "",
+        });
         const g = await COMMENT_GEN.generateMine(
-          { text: POSTS[i].text }, $("comment_prompt").value, beh, LLM);
+          { text: POSTS[i].text }, POSTS[i].text, beh2, LLM);
         r = (g && g.text) || "";
+        if (!r) {
+          failCount++;
+          if (g && g.error) lastErr = g.error;
+        }
       }
-      if (!r) r = COMMENT_GEN.tryTemplates({ text: POSTS[i].text }, beh.comment_target_len, beh) || "";
+      /* 【已取消模板兜底】不再退回 tryTemplates。
+       * 模型给不出合格句子就显示空，让你直接看到提示词的真实效果。 */
       results[i] = r || null;
     } catch (e) {
       results[i] = null;
+      failCount++;
+      lastErr = String(e && e.message || e);
     }
     renderPosts(results);
   }
   const ok = results.filter(Boolean).length;
-  $("genMsg").textContent = `完成：${ok}/${targets.length} 条生成成功` + (useLlm ? "（调用模型）" : "（模板）");
+  const tail = useLlm ? "（全部调用模型，无模板兜底）" : "（未填 API Key，无法生成）";
+  $("genMsg").textContent = `完成：${ok}/${targets.length} 条生成成功${tail}` +
+    (failCount && lastErr ? ` · 失败原因：${lastErr}` : "");
 }
 
 // ---------------- 保存 ----------------
