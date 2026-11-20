@@ -140,6 +140,25 @@ async function inputPress(tabId, x, y, speed) {
   return r !== null;
 }
 
+/* 双击：在同一坐标连按两次，clickCount 依次 1、2。
+ * 两次之间的间隔必须短（60~140ms），而且**中间不能移动鼠标**——
+ * 一旦移动，浏览器就当成两次独立的单击，双击事件不触发。
+ * X 的左侧栏「主页」双击 = 重新加载时间线，这是用户要的刷新方式。 */
+async function inputDoubleClick(tabId, x, y, speed) {
+  await sleep(rnd(90, 220) * (speed || 1));
+  for (const n of [1, 2]) {
+    await cdp(tabId, "Input.dispatchMouseEvent", {
+      type: "mousePressed", x, y, button: "left", clickCount: n, modifiers: 0,
+    });
+    await sleep(rnd(40, 90));
+    await cdp(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseReleased", x, y, button: "left", clickCount: n, modifiers: 0,
+    });
+    if (n === 1) await sleep(rnd(60, 140));   // 两次点击的间隔
+  }
+  return true;
+}
+
 async function inputClick(tabId, x, y, speed) {
   await humanMove(tabId, x, y, speed || 1);
   return inputPress(tabId, x, y, speed);
@@ -371,6 +390,7 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       if (m.op === "click") reply(await inputClick(tabId, m.x, m.y, m.speed));
       else if (m.op === "move") reply(await inputMove(tabId, m.x, m.y, m.speed));
       else if (m.op === "press") reply(await inputPress(tabId, m.x, m.y, m.speed));
+      else if (m.op === "dblclick") reply(await inputDoubleClick(tabId, m.x, m.y, m.speed));
       else if (m.op === "wheel") reply(await inputWheel(tabId, m.x, m.y, m.notches, m.speed));
       else if (m.op === "type") reply(await inputType(tabId, m.text, m.perCharMs));
       else if (m.op === "hotkey") reply(await inputHotkey(tabId, m.keys));

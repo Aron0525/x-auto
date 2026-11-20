@@ -250,46 +250,75 @@
    *   3) 还不行 → 点左侧栏「主页」重新进首页，回主流程再走一遍
    * 返回 "scrolled" | "posts" | "home" | "timeout"。 */
   async function refreshOrTop(reason) {
-    // ---- 1) 死命往下滑（用户第一优先）----
+    /* 【用户明确要求】没有帖子时 = 双击左侧栏「主页」刷新。
+     *
+     * 顺序调整为：
+     *   ① 双击主页（首选，最接近真人操作：没内容了就双击主页签重载）
+     *   ② 点「Show N posts」/「新帖」按钮
+     *   ③ 往下滑（老内容还可能没翻完）
+     * 以前是先死命往下滑 8 次才回头看按钮，用户看到的就是"卡住不动"。 */
     const before = timelineSig();
-    let lastCount = document.querySelectorAll(SEL.article).length;
-    for (let i = 0; i < 8; i++) {
-      await scrollBy(ri(2, 4));
-      const grown = await waitMoreArticles(lastCount, 6000);
-      if (grown) {
-        lastCount = document.querySelectorAll(SEL.article).length;
-        // 新内容真的变了才算「滑出新帖」
-        if (timelineSig() !== before) {
-          await logAct(`${reason} → 继续往下滑，滑出了新内容`, "nav");
-          return "scrolled";
-        }
-        // DOM 条数增加但签名没变，再滑一屏看看
-        continue;
-      }
-      await sleep(rnd(800, 1600) * SPD);
+
+    // ---- 1) 双击主页（首选）----
+    await logAct(`${reason} → 双击左侧栏「主页」刷新`, "nav");
+    if (await doubleClickNav(SEL.navHome, "首页")) {
+      if (timelineSig() !== before) return "home";
     }
 
-    // ---- 2) 点横幅下方的「Show N posts」/「新帖」按钮 ----
+    // ---- 2) 点横幅「Show N posts」/「新帖」按钮 ----
     const pill = findNewPostsPill();
     if (pill && await clickEl(pill, { settle: [1500, 2600] })) {
       const label = (pill.innerText || "").trim().slice(0, 24) || "新帖";
-      await logAct(`${reason} → 滑不出新帖，点「${label}」刷新`, "nav");
+      await logAct(`${reason} → 点「${label}」刷新`, "nav");
       await sleep(rnd(1200, 2200) * SPD);
       if (await waitTimelineChange(before, 15000, "点按钮刷新")) return "posts";
-      return "timeout";
     }
     const arrow = q(SEL.newPostsBtn);
     if (arrow && await clickEl(arrow, { settle: [1500, 2600] })) {
       await logAct(`${reason} → 点顶部「新帖」箭头刷新`, "nav");
       await sleep(rnd(1200, 2200) * SPD);
       if (await waitTimelineChange(before, 15000, "顶部刷新")) return "posts";
-      return "timeout";
     }
 
-    // ---- 3) 都不行 → 点左侧栏「主页」重进（真实点击，不拼 URL）----
-    await logAct(`${reason} → 没按钮可点，点左侧栏「主页」重新进首页`, "nav");
-    if (await clickNav(SEL.navHome, "首页")) return "home";
+    // ---- 3) 往下滑（老内容可能还没翻完）----
+    let lastCount = document.querySelectorAll(SEL.article).length;
+    for (let i = 0; i < 8; i++) {
+      await scrollBy(ri(2, 4));
+      const grown = await waitMoreArticles(lastCount, 6000);
+      if (grown) {
+        lastCount = document.querySelectorAll(SEL.article).length;
+        if (timelineSig() !== before) {
+          await logAct(`${reason} → 继续往下滑，滑出了新内容`, "nav");
+          return "scrolled";
+        }
+        continue;
+      }
+      await sleep(rnd(800, 1600) * SPD);
+    }
     return "timeout";
+  }
+
+  /* 双击导航按钮 = 刷新时间线（用户明确要求）。
+   * 单击只是"回到顶部"，只有双击才会重新加载。
+   * 关键：两次点击之间**不能移动鼠标**，否则浏览器当成两次独立单击。
+   * 所以不能在 content 里连调两次 clickEl（那会重新 hover + 落点校验），
+   * 要走 background 的 dblclick 原语，一次完成。 */
+  async function doubleClickNav(sel, label) {
+    const el = q(sel);
+    if (!el) { await logAct(`找不到「${label}」按钮`, "wait"); return false; }
+    checkAbort();
+    const r = await stableRect(el);
+    if (r.width <= 0 || r.height <= 0) return false;
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    let x = cx + _off.dx, y = cy + _off.dy;
+    if (!(await hoverHits(el, x, y))) {
+      const hit = await scanForHit(el, cx, cy, 24, 8);
+      if (hit) { x = hit.x; y = hit.y; _off.dx += hit.dx; _off.dy += hit.dy; }
+      else { await logAct("落点校验失败：鼠标移不到「主页」上，跳过", "skip"); return false; }
+    }
+    await send({ t: "input", op: "dblclick", x, y, speed: SPD });
+    await sleep(rnd(1500, 2600) * SPD);
+    return true;
   }
 
   /* 全文读取：时间线卡片里长文默认折叠（Show more）。
