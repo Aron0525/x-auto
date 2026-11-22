@@ -673,7 +673,7 @@ $("clearPosts").onclick = () => {
   $("genMsg").textContent = "已清空，点「加一条」自己写";
 };
 $("genAll").onclick = () => generateAll(true);
-$("genTpl").onclick = () => generateAll(false);
+// 「只用模板生成」按钮已删除：模板兜底已取消，留着会误导（点了什么都不会出）
 $("save").onclick = save;
 $("close").onclick = () => window.close();
 
