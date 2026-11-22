@@ -1,4 +1,4 @@
-﻿/* panel.js —— 侧边栏控制面板 */
+/* panel.js —— 侧边栏控制面板 */
 
 const $ = (id) => document.getElementById(id);
 const FIELDS = ["session_minutes", "typing_ms", "like_prob", "comment_prob",
@@ -25,6 +25,8 @@ const DEFAULTS = {
   tone: "friendly", style: "normal", notif_enabled: false,
   llm_key: "", llm_model: "deepseek-flash",
   max_like: 60, max_reply: 20, max_follow: 25,
+  // 评论审核：默认关闭（用户要求先暂停）。及格线只有开启时才生效。
+  review_enabled: false, review_threshold: 60,
 };
 
 async function loadSettings() {
@@ -32,7 +34,23 @@ async function loadSettings() {
   const s = { ...DEFAULTS, ...(d.xa_settings || {}) };
   for (const f of FIELDS) if ($(f)) $(f).value = s[f] ?? "";
   $("notif_enabled").checked = !!s.notif_enabled;
+  /* 评论审核：侧边栏也能开关、改及格线。默认关闭。 */
+  if ($("review_enabled")) $("review_enabled").checked = s.review_enabled === true;
+  if ($("review_threshold")) $("review_threshold").value = s.review_threshold ?? 60;
+  updateReviewHint();
   return s;
+}
+
+/* 审核开关状态提示：关着的时候明确告诉用户及格线现在不生效 */
+function updateReviewHint() {
+  const el = $("reviewHint");
+  const on = $("review_enabled") ? $("review_enabled").checked : false;
+  if (el) el.textContent = on ? "已开启：不合格的评论会被丢弃" : "默认关闭：模型写什么就发什么";
+  const th = $("review_threshold");
+  if (th) {
+    th.disabled = !on;
+    th.style.opacity = on ? "1" : "0.45";
+  }
 }
 
 async function saveSettings() {
@@ -49,6 +67,11 @@ async function saveSettings() {
       : raw;
   }
   s.notif_enabled = $("notif_enabled").checked;
+  /* 审核字段必须显式取：checkbox 走通用循环会被存成 "on" 字符串。 */
+  s.review_enabled = $("review_enabled") ? $("review_enabled").checked : false;
+  s.review_threshold = $("review_threshold")
+    ? Math.max(0, Math.min(100, parseInt($("review_threshold").value, 10) || 60))
+    : 60;
   // 合并而不是整体替换：控制台独有的字段（speed/feed 等）不能被抹掉
   const cur = (await chrome.storage.local.get(["xa_settings"])).xa_settings || {};
   await chrome.storage.local.set({ xa_settings: { ...cur, ...s } });
@@ -136,6 +159,14 @@ $("dash").onclick = () => chrome.runtime.sendMessage({ t: "open-dashboard" });
 $("save").onclick = saveSettings;
 $("rounds").onclick = toggleRounds;
 $("export").onclick = exportRecords;
+
+/* 审核开关：勾上/取消时立刻更新提示和及格线可用状态 */
+if ($("review_enabled")) $("review_enabled").onchange = updateReviewHint;
+/* 打开审核词表窗口（评论规则窗口，词表在里面增删改） */
+if ($("openReviewRules")) $("openReviewRules").onclick = () => chrome.windows.create({
+  url: chrome.runtime.getURL("comment-rule.html"),
+  type: "popup", width: 980, height: 900,
+});
 
 loadSettings();
 refresh();

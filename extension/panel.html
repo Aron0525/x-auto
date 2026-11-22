@@ -69,6 +69,17 @@
   </details>
 
   <details>
+    <summary>评论审核</summary>
+    <div class="row" style="margin-bottom:4px">
+      <label>发送前审核</label>
+      <input type="checkbox" id="review_enabled" style="flex:0">
+      <span class="hint" id="reviewHint" style="color:#71767b;font-size:10px;flex:1">默认关闭</span>
+    </div>
+    <div class="row"><label>及格线</label><input type="number" id="review_threshold" min="0" max="100" step="5"></div>
+    <div class="row"><button class="ghost" id="openReviewRules" style="padding:3px 8px;font-size:11px">改词表（增删改）</button></div>
+  </details>
+
+  <details>
     <summary>LLM 与额度</summary>
     <div class="row"><label>API Key</label><input type="text" id="llm_key" placeholder="留空=模板兜底"></div>
     <div class="row"><label>模型</label><input type="text" id="llm_model"></div>

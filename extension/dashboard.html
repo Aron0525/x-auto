@@ -330,6 +330,26 @@
             <span class="hint">实际在 ±5 内随机，硬上限 20</span></div>
           <div class="row"><label>评论去重</label><input type="checkbox" id="dedup_comment">
             <span class="hint">同一帖只回一次</span></div>
+
+          <!-- 评论审核：默认关闭。开关就在主控制台，不用进子窗口 -->
+          <div style="margin-top:14px;padding-top:12px;border-top:1px solid #2f3336">
+            <div class="row" style="margin-bottom:6px">
+              <label style="font-weight:600">发送前审核</label>
+              <input type="checkbox" id="review_enabled">
+              <span class="hint" id="reviewHint">默认关闭：模型写什么就发什么</span>
+            </div>
+            <div class="row"><label>及格线</label><input type="number" id="review_threshold" min="0" max="100" step="5">
+              <span class="hint">默认 60 分。只有开启审核时才生效</span></div>
+            <div class="row" style="flex-wrap:wrap">
+              <label>审核词表</label>
+              <button class="ghost" id="openReviewRules">修改审核词表（7 张可增删改）</button>
+              <span class="hint" id="reviewRulesState"></span>
+            </div>
+            <div class="tip" id="reviewOffTip" style="margin:8px 0 0">
+              审核<b>当前是关闭的</b>，下面的及格线和词表都不会影响发送。
+              想启用就在上面勾上「发送前审核」再保存。
+            </div>
+          </div>
         </div>
         <div class="card">
           <h2>我的账号（防止自己回自己）</h2>

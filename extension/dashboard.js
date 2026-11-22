@@ -1,4 +1,4 @@
-﻿/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
+/* dashboard.js —— 控制台页面逻辑（面板 panel.js 的完整版） */
 
 const $ = (id) => document.getElementById(id);
 const NUM = ["session_minutes", "session_min_min", "session_max_min", "typing_ms", "follow_per_session",
@@ -9,6 +9,9 @@ const PROB = ["like_prob", "comment_prob", "expand_prob", "bookmark_prob", "expl
               "like_prob_cap", "comment_prob_cap"];
 const TEXT = ["tone", "style", "feed", "llm_key", "llm_base", "llm_model",
               "comment_rule", "focus_keywords", "my_handles"];
+/* review_enabled / review_threshold 不放进 CHK 和 NUM：
+ * checkbox 在通用循环里会被存成 "on" 字符串、数值会少上限约束，
+ * 它们由 saveSettings 里的显式赋值处理，这样存进去的就是真正的布尔和 0~100。 */
 const CHK = ["dedup_comment", "session_jitter"];
 const FIELDS = [...NUM, ...PROB, ...TEXT, ...CHK, "speed"];
 
@@ -69,6 +72,11 @@ async function loadSettings() {
   $("notif_enabled").checked = !!s.notif_enabled;
   $("dedup_comment").checked = s.dedup_comment !== false;
   $("session_jitter").checked = s.session_jitter !== false;
+  /* 审核开关：默认关闭（用户要求先暂停审核）。
+   * 及格线也跟着读，但开关关着的时候它不生效。 */
+  $("review_enabled").checked = s.review_enabled === true;
+  $("review_threshold").value = s.review_threshold ?? 60;
+  updateReviewState();
   updateKeyState();
   const sum = $("ruleSummary");
   if (sum) {
@@ -76,6 +84,40 @@ async function loadSettings() {
       ? "原 SOP 规则（严格校验）"
       : `我的规则 · 目标 ${s.comment_target_len ?? 13} 字左右（无硬上限）`;
   }
+}
+
+/* 审核状态提示：开关关着的时候要讲清楚「这排设置现在不生效」，
+ * 否则用户会以为调了及格线却没反应。 */
+function updateReviewState() {
+  const on = $("review_enabled") ? $("review_enabled").checked : false;
+  const hint = $("reviewHint");
+  const tip = $("reviewOffTip");
+  const th = $("review_threshold");
+  if (hint) hint.textContent = on
+    ? "已开启：不合格的评论会被丢弃，不发出去"
+    : "默认关闭：模型写什么就发什么";
+  if (tip) tip.style.display = on ? "none" : "";
+  if (th) {
+    // 关着的时候把及格线灰掉，一眼看出它现在没用
+    th.disabled = !on;
+    th.style.opacity = on ? "1" : "0.45";
+  }
+  updateReviewRulesState();
+}
+
+/* 显示词表有没有被改过：改过就告诉用户改了几张表 */
+function updateReviewRulesState() {
+  const el = $("reviewRulesState");
+  if (!el) return;
+  chrome.storage.local.get(["xa_settings"]).then((d) => {
+    const rules = ((d.xa_settings || {}).review_rules) || {};
+    const changed = Object.entries(rules).filter(([, v]) => v && (Array.isArray(v) ? v.length : true));
+    if (changed.length) {
+      el.innerHTML = `<span class="pill on">已自定义 ${changed.length} 张词表</span>`;
+    } else {
+      el.innerHTML = '<span class="pill off">全部是出厂词表</span>';
+    }
+  }).catch(() => {});
 }
 
 /* API Key 状态提示：让人一眼看出「已保存」还是「还没填」。
@@ -93,7 +135,7 @@ function updateKeyState() {
       const model = ($("llm_model").value || "").trim() || "deepseek-flash";
       badge.innerHTML = `<span class="pill on">已配置</span> ${esc(model)}`;
     } else {
-      badge.innerHTML = '<span class="pill off">未配置</span> 用模板兜底';
+      badge.innerHTML = '<span class="pill off">未配置</span> 评论会被跳过（模板兜底已取消）';
     }
   }
 
@@ -220,6 +262,7 @@ async function saveSettings() {
     if (PROB.includes(f)) s[f] = Math.max(0, Math.min(1, parseFloat(el.value) || 0));
     else if (f === "speed") s[f] = Math.max(0.5, Math.min(3, parseFloat(el.value) || 1.5));
     else if (f === "comment_target_len") s[f] = Math.max(5, Math.min(40, parseInt(el.value, 10) || 13));
+    else if (f === "review_threshold") s[f] = Math.max(0, Math.min(100, parseInt(el.value, 10) || 60));
     else if (NUM.includes(f)) s[f] = Math.max(0, parseInt(el.value, 10) || 0);
     else s[f] = el.value.trim();
   }
@@ -239,6 +282,11 @@ async function saveSettings() {
   s.notif_enabled = $("notif_enabled").checked;
   s.dedup_comment = $("dedup_comment").checked;
   s.session_jitter = $("session_jitter").checked;
+  /* 审核开关必须显式取 checked。
+   * 它虽然在 CHK 数组里，但循环的 else 分支会把 checkbox 存成 "on" 字符串，
+   * 那样 review_enabled === true 永远不成立，开关就永远打不开。 */
+  s.review_enabled = $("review_enabled").checked;
+  s.review_threshold = Math.max(0, Math.min(100, parseInt($("review_threshold").value, 10) || 60));
 
   // 关键：与已有设置**合并**，不能整体替换。
   // 侧边栏和这个控制台字段不完全相同，整体替换会互相抹掉对方保存的字段
@@ -248,7 +296,9 @@ async function saveSettings() {
   await chrome.storage.local.set({ xa_settings: merged });
 
   const ruleCn = merged.comment_rule === "sop" ? "原 SOP 规则" : `我的规则（${merged.comment_target_len} 字左右）`;
-  flash(`设置已保存 · 速度 ${merged.speed} · 评论：${ruleCn}`, "on");
+  const reviewCn = merged.review_enabled ? ` · 审核开（${merged.review_threshold} 分）` : " · 审核关";
+  flash(`设置已保存 · 速度 ${merged.speed} · 评论：${ruleCn}${reviewCn}`, "on");
+  updateReviewState();      // 保存后立刻反映开关状态
 }
 
 function flash(msg, cls) {
@@ -727,6 +777,15 @@ $("openCommentRule").onclick = () => chrome.windows.create({
   type: "popup", width: 980, height: 900,
 });
 $("openCommentRule2").onclick = $("openCommentRule").onclick;
+
+/* 审核开关：勾上/取消时立刻更新提示和及格线可用状态 */
+$("review_enabled").onchange = updateReviewState;
+
+/* 打开审核词表窗口（就是评论规则窗口，词表在它里面） */
+$("openReviewRules").onclick = () => chrome.windows.create({
+  url: chrome.runtime.getURL("comment-rule.html"),
+  type: "popup", width: 980, height: 900,
+});
 $("saveLlm").onclick = saveLlm;
 $("testLlm").onclick = testLlm;
 $("clearLlm").onclick = clearLlm;
