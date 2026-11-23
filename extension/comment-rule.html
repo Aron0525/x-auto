@@ -178,6 +178,23 @@
   </div>
 
   <div class="card">
+    <h2>基础检查（生成时把关）</h2>
+    <p class="desc">
+      模型生成评论时，这三道会决定「这句能不能用」。<b>现在默认全部关闭</b>——
+      生成什么就发什么，不做拦截。需要时可以单独打开。
+    </p>
+    <div class="row"><label>① 基本校验</label>
+      <input type="checkbox" id="check_validate">
+      <span class="hint">空评论 / 纯符号 / 少于4字 / 互关互赞</span></div>
+    <div class="row"><label>② 身份检查</label>
+      <input type="checkbox" id="check_echo">
+      <span class="hint">作者做的事不能被你当成自己的说</span></div>
+    <div class="row"><label>③ 观点检查</label>
+      <input type="checkbox" id="check_opinion">
+      <span class="hint">要有观点/态度/提问；纯附和算废话</span></div>
+  </div>
+
+  <div class="card">
     <h2>发送前审核</h2>
     <p class="desc">
       打开开关后，每条评论<b>生成后、发送前</b>会被打分，不到及格线就跳过不发。

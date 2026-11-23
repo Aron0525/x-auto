@@ -751,14 +751,22 @@ globalThis.COMMENT_GEN = (() => {
       parts.push(`要求：大约 ${len} 个字（${lo}~${hi} 是理想区间，多几个字没关系，但句子必须完整），语气${toneCn}。`);
 
       let feedback = "";
+      let apiErr = "";                 // 记住最后一次 API 层面的错误
       for (const attempt of [1, 2, 3]) {
         let raw = "";
         try {
           raw = await chrome.runtime.sendMessage({
             t: "llm", system, user: parts.join("\n\n") + feedback, cfg: llmCfg,
           });
-        } catch (e) { raw = ""; }
-        if (!raw || raw.__error) break;
+        } catch (e) {
+          raw = "";
+          apiErr = String((e && e.message) || e || "sendMessage 失败");
+        }
+        /* 【重要】以前这里 `break` 掉了，导致 Key 错/余额不足/网络断
+         * 都被笼统报成"模型没给出合格评论"，根本查不出真实原因。
+         * 现在把 API 的真实错误记住并返回，日志能直接看到。 */
+        if (!raw) { if (!apiErr) apiErr = "模型接口没有返回内容"; break; }
+        if (raw.__error) { apiErr = String(raw.__error); break; }
 
         const cleaned = clean(raw).replace(/[。！？!?]+$/, (m) => m);
         if (cleaned) {
@@ -781,11 +789,12 @@ globalThis.COMMENT_GEN = (() => {
         }
         feedback = `\n\n【上一版不合格】内容不符合要求（大约 ${len} 字，句子要完整通顺），请重写一句。`;
       }
-      /* 【用户要求】取消模板兜底：模型给不出合格句子就**这条不评论**，
-       * 不再退回那 54 条固定模板。
-       * 理由：模板句子就那么几十条，发多了主页一看全是重复的，比少发更伤号。 */
-      return { text: "", source: "llm_failed", target: len,
-               error: "模型三次都没给出合格评论，这条跳过（模板兜底已取消）" };
+      /* 【用户要求】取消模板兜底：模型给不出合格句子就**这条不评论**。
+       * 但要把「是 API 挂了」和「模型写的不合格」分开报，否则没法排查。 */
+      return { text: "", source: apiErr ? "llm_error" : "llm_failed", target: len,
+               error: apiErr
+                 ? `调用模型失败：${apiErr}`
+                 : "模型三次都没给出合格评论，这条跳过（模板兜底已取消）" };
     }
 
     /* 没配 API Key：直接跳过，不用模板。

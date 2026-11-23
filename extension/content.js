@@ -948,10 +948,11 @@
       min_read_before_refresh: s.min_read_before_refresh ?? 12,
       dedup_comment: s.dedup_comment !== false,
       focus_keywords: s.focus_keywords || "",
-      // 三道基础检查：默认全开，只有显式 false 才是关（面板可单独开关）
-      check_validate: s.check_validate !== false,
-      check_echo: s.check_echo !== false,
-      check_opinion: s.check_opinion !== false,
+      // 三道基础检查：默认**全关**（用户要求"暂时不用所有审核，生成什么就发什么"）。
+      // 只有显式 true 才开。和审核开关一致：undefined/缺失 = 关。
+      check_validate: s.check_validate === true,
+      check_echo: s.check_echo === true,
+      check_opinion: s.check_opinion === true,
       // 我的账号名（测试号/正式号都填，逗号分隔）——用于「不碰自己帖子」判定
       my_handles: s.my_handles || "",
       follow_per_session: s.follow_per_session ?? 5,
@@ -1018,6 +1019,7 @@
     if (gen.source === "llm")
       return (`模型 ${gen.model || ""}`).trim() + (gen.attempts > 1 ? `（第 ${gen.attempts} 次才过）` : "");
     if (gen.source === "llm_failed") return "模型 3 次不合格";
+    if (gen.source === "llm_error") return "模型接口报错";
     if (gen.source === "no_api") return "未配 API Key";
     if (gen.source === "template") return "⚠ 模板（已停用，不该出现）";
     return gen.source || "来源未知";

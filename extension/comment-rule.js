@@ -117,6 +117,10 @@ async function load() {
   $("tone").value = s.tone || "friendly";
   $("review_enabled").checked = s.review_enabled === true;   // 默认关闭
   $("review_threshold").value = s.review_threshold ?? 60;
+  /* 三道基础检查：默认全关（用户要求"生成什么就发什么"），只有 true 才开 */
+  $("check_validate").checked = s.check_validate === true;
+  $("check_echo").checked = s.check_echo === true;
+  $("check_opinion").checked = s.check_opinion === true;
 
   /* 审核词表：读回用户改过的版本，没改过的用出厂值 */
   wlLoad(s.review_rules || null);
@@ -513,6 +517,12 @@ async function generateAll(useLlm) {
     tone: $("tone").value,
     comment_prompt: $("comment_prompt").value,
     comment_templates: $("comment_templates").value,
+    /* 三道基础检查开关必须带进来，否则 checkOn() 读到 undefined
+     * 会默认当成「开」，预览里的评论就被白白拦掉了。
+     * 取界面当前勾选状态，和主控制台/侧边栏一致。 */
+    check_validate: $("check_validate") ? $("check_validate").checked : false,
+    check_echo: $("check_echo") ? $("check_echo").checked : false,
+    check_opinion: $("check_opinion") ? $("check_opinion").checked : false,
   };
 
   COMMENT_GEN.applyCustom(beh);
@@ -571,6 +581,10 @@ async function save() {
     else if (CHK.includes(f)) s[f] = el.checked;
     else s[f] = el.value;
   }
+  /* 三道基础检查：显式存布尔，默认关（用户要求生成什么就发什么） */
+  s.check_validate = $("check_validate") ? $("check_validate").checked : false;
+  s.check_echo = $("check_echo") ? $("check_echo").checked : false;
+  s.check_opinion = $("check_opinion") ? $("check_opinion").checked : false;
 
   // 把当前编辑框内容写回这套提示词
   const cur = curPrompt();

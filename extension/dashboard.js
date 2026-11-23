@@ -76,10 +76,11 @@ async function loadSettings() {
    * 及格线也跟着读，但开关关着的时候它不生效。 */
   $("review_enabled").checked = s.review_enabled === true;
   $("review_threshold").value = s.review_threshold ?? 60;
-  /* 三道基础检查：默认全开，只有存了显式 false 才是关 */
-  $("check_validate").checked = s.check_validate !== false;
-  $("check_echo").checked = s.check_echo !== false;
-  $("check_opinion").checked = s.check_opinion !== false;
+  /* 三道基础检查：默认**全关**（用户要求"暂时不用所有审核，生成什么就发什么"）。
+   * 只有显式 true 才开。 */
+  $("check_validate").checked = s.check_validate === true;
+  $("check_echo").checked = s.check_echo === true;
+  $("check_opinion").checked = s.check_opinion === true;
   updateReviewState();
   updateKeyState();
   const sum = $("ruleSummary");

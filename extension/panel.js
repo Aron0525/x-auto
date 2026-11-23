@@ -37,10 +37,10 @@ async function loadSettings() {
   /* 评论审核：侧边栏也能开关、改及格线。默认关闭。 */
   if ($("review_enabled")) $("review_enabled").checked = s.review_enabled === true;
   if ($("review_threshold")) $("review_threshold").value = s.review_threshold ?? 60;
-  /* 三道基础检查：默认全开，只有存了显式 false 才是关 */
-  if ($("check_validate")) $("check_validate").checked = s.check_validate !== false;
-  if ($("check_echo")) $("check_echo").checked = s.check_echo !== false;
-  if ($("check_opinion")) $("check_opinion").checked = s.check_opinion !== false;
+  /* 三道基础检查：默认**全关**（用户要求"生成什么就发什么"），只有 true 才开 */
+  if ($("check_validate")) $("check_validate").checked = s.check_validate === true;
+  if ($("check_echo")) $("check_echo").checked = s.check_echo === true;
+  if ($("check_opinion")) $("check_opinion").checked = s.check_opinion === true;
   updateReviewHint();
   return s;
 }
