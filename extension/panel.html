@@ -76,14 +76,14 @@
       <span class="hint" id="reviewHint" style="color:#71767b;font-size:10px;flex:1">默认关闭</span>
     </div>
     <div class="row"><label>及格线</label><input type="number" id="review_threshold" min="0" max="100" step="5"></div>
-    <div class="row" style="margin:8px 0 4px;border-top:1px solid #38444d;padding-top:8px;font-size:11px;color:#aab8c2">基础检查（生成时把关，默认全开）</div>
-    <div class="row"><label>① 基本校验</label><input type="checkbox" id="check_validate" style="flex:0">
-      <span class="hint" style="flex:1;font-size:10px">空/纯符号/太短/互关</span></div>
-    <div class="row"><label>② 身份检查</label><input type="checkbox" id="check_echo" style="flex:0">
-      <span class="hint" style="flex:1;font-size:10px">作者的事不能当成自己的</span></div>
-    <div class="row"><label>③ 观点检查</label><input type="checkbox" id="check_opinion" style="flex:0">
-      <span class="hint" style="flex:1;font-size:10px">要有观点/态度/提问</span></div>
-    <div class="row"><button class="ghost" id="openReviewRules" style="padding:3px 8px;font-size:11px">改词表（增删改）</button></div>
+    <div class="row" style="margin:8px 0 4px;border-top:1px solid #38444d;padding-top:8px;font-size:11px;color:#aab8c2">基础检查（生成时把关，<b>默认全关</b>）</div>
+    <div class="row" style="align-items:flex-start"><label>① 基本校验</label><input type="checkbox" id="check_validate" style="flex:0;margin-top:3px">
+      <span class="hint" style="flex:1;font-size:10px">空评论 / 纯符号 / 少于4字 / 互关互赞/求关注</span></div>
+    <div class="row" style="align-items:flex-start"><label>② 身份检查</label><input type="checkbox" id="check_echo" style="flex:0;margin-top:3px">
+      <span class="hint" style="flex:1;font-size:10px">作者说「我上架了」，你不能说「我也上架了」</span></div>
+    <div class="row" style="align-items:flex-start"><label>③ 观点检查</label><input type="checkbox" id="check_opinion" style="flex:0;margin-top:3px">
+      <span class="hint" style="flex:1;font-size:10px">要有观点词/态度词/问句；「说得好」这类纯附和会被拦</span></div>
+    <div class="row"><button class="ghost" id="openReviewRules" style="padding:3px 8px;font-size:11px">改词表（七张可增删改·自动记住）</button></div>
   </details>
 
   <details>

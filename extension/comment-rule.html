@@ -180,25 +180,39 @@
   <div class="card">
     <h2>基础检查（生成时把关）</h2>
     <p class="desc">
-      模型生成评论时，这三道会决定「这句能不能用」。<b>现在默认全部关闭</b>——
-      生成什么就发什么，不做拦截。需要时可以单独打开。
+      模型写出一句评论后，先过这三道；<b>过不了就让它重写</b>，三次都过不了这条就跳过不发。
+      <b>现在默认全部关闭</b>——生成什么就发什么，一条都不拦。需要时单独打开。
     </p>
-    <div class="row"><label>① 基本校验</label>
-      <input type="checkbox" id="check_validate">
-      <span class="hint">空评论 / 纯符号 / 少于4字 / 互关互赞</span></div>
-    <div class="row"><label>② 身份检查</label>
-      <input type="checkbox" id="check_echo">
-      <span class="hint">作者做的事不能被你当成自己的说</span></div>
-    <div class="row"><label>③ 观点检查</label>
-      <input type="checkbox" id="check_opinion">
-      <span class="hint">要有观点/态度/提问；纯附和算废话</span></div>
+    <div class="row" style="align-items:flex-start">
+      <label>① 基本校验</label>
+      <input type="checkbox" id="check_validate" style="flex:0;margin-top:3px">
+      <span class="hint">管「这能不能算一句话」：<br>
+        · 空评论 → 拦<br>
+        · 纯符号/纯表情（如「。。。」「😂😂」）→ 拦<br>
+        · 少于 4 个字 → 拦（说不出内容）<br>
+        · 含互关/回关/互赞/关注我/求关注 → 拦（平台判定刷量）</span></div>
+    <div class="row" style="align-items:flex-start">
+      <label>② 身份检查</label>
+      <input type="checkbox" id="check_echo" style="flex:0;margin-top:3px">
+      <span class="hint">管「你有没有假冒作者」：<br>
+        · 作者说「我把产品上架了」，你评论「我也上架了」→ 拦<br>
+        · 作者说「定投一年」，你评论「我定投一年也是这感受」→ 拦<br>
+        · 只是引用他的数据/观点（「订阅从 0 到 3000，这数字不容易」）→ 放行</span></div>
+    <div class="row" style="align-items:flex-start">
+      <label>③ 观点检查</label>
+      <input type="checkbox" id="check_opinion" style="flex:0;margin-top:3px">
+      <span class="hint">管「这句话有没有信息量」，三个条件<b>命中任意一个</b>就放行：<br>
+        · 有观点词（但/其实/关键/成本/代价/未必/落地…）<br>
+        · 有态度词（扎心/佩服/离谱/真实/笑死…）<br>
+        · 是个问句（带 ？且 ≥6 字）<br>
+        三者都没有 = 纯附和（说得好/学到了/太强了/收藏了）→ 拦</span></div>
   </div>
 
   <div class="card">
     <h2>发送前审核</h2>
     <p class="desc">
       打开开关后，每条评论<b>生成后、发送前</b>会被打分，不到及格线就跳过不发。
-      下面的词表可以随意<b>增删改</b>——改完点最下面的「保存设置」生效。
+      下面的七张词表可以随意<b>增删改</b>，<b>改完自动记住</b>，不用点保存。
     </p>
     <div class="row"><label>开启审核</label>
       <input type="checkbox" id="review_enabled">
@@ -208,14 +222,26 @@
       <span class="hint">默认 60 分。调高更严格，调低更宽松</span></div>
 
     <div class="tip">
-      <b>七张词表分别管什么</b><br>
-      · <b>一票否决词</b>：评论里出现任意一个 → 直接不发，不管多少分<br>
-      · <b>观点词</b>：命中一个就能拿观点分（判断、因果、转折、取舍都算）<br>
-      · <b>态度词</b>：没有观点时，有明确情绪反应也算及格<br>
-      · <b>AI 腔词</b>：出现就扣人味分（不会一票否决）<br>
-      · <b>编造亲历词</b>：出现就扣人味分<br>
-      · <b>话题实词</b>：判断评论是否接住了帖子的具体内容<br>
-      · <b>场景词</b>：判断评论和帖子是否同属一个话题方向
+      <b>七张词表分别管什么（只在「开启审核」时生效）</b><br><br>
+      <b>1. 一票否决词</b> —— 最狠的一档。<br>
+      　 评论里出现任意一个 → <b>直接不发</b>，不管得多少分。<br>
+      　 出厂含：直角引号「」、议论文腔（综上所述/首先/其次）、冒充 AI、刷量词（互关/@/#）。<br><br>
+      <b>2. 观点词</b> —— 判断这句有没有「想法」。<br>
+      　 命中一个就能拿观点分（最多 30 分）。比如「但」「其实」「关键」「成本」「未必」。<br><br>
+      <b>3. 态度词</b> —— 没有观点时的第二道口子。<br>
+      　 有明确情绪反应也算及格：扎心、佩服、离谱、真实、笑死。<br>
+      　 作用：让「这话扎心，我也有同感」这种真人反应不被误杀。<br><br>
+      <b>4. AI 腔 / 书面语词</b> —— 扣「人味分」，<b>不会一票否决</b>。<br>
+      　 比如「综上所述」「值得注意的是」「赋能」「抓手」「闭环」，出现就减分。<br><br>
+      <b>5. 编造亲历词</b> —— 同样只扣分。<br>
+      　 比如「我朋友」「我公司」「亲测」，写了编造的亲身经历会降低可信度分。<br><br>
+      <b>6. 话题实词</b> —— 判断「是不是在这条帖子下说的」。<br>
+      　 这些词必须<b>帖子里出现、评论里也出现</b>才算相关：订阅、付费、裁员、面试、分发…<br>
+      　 作用：拦掉「放哪条帖子下都能用」的万能评论。<br><br>
+      <b>7. 场景词</b> —— 判断评论和帖子是不是同一类话题。<br>
+      　 格式是 <b>场景名=词,词,词</b>（逗号分隔），一行一个场景，比如：<br>
+      　 <code>vent=亏,回撤,行情,仓位</code><br>
+      　 <code>content=内容,选题,写作,读者</code>
     </div>
 
     <div id="wfBanned" class="wl"></div>
@@ -226,10 +252,17 @@
     <div id="wfTopic" class="wl"></div>
     <div id="wfScene" class="wl"></div>
 
-    <div class="row" style="margin-top:6px">
+    <div class="row" style="margin-top:6px;flex-wrap:wrap;gap:8px">
       <button class="ghost" id="wlResetAll" style="padding:6px 14px;font-size:12px;border-radius:8px">
         全部恢复出厂词表</button>
+      <button class="ghost" id="wlClearAll" style="padding:6px 14px;font-size:12px;border-radius:8px;color:#f9158b">
+        一键清空全部词表</button>
       <span class="hint" id="wlMsg"></span>
+    </div>
+    <div class="tip warn" style="margin-top:6px">
+      <b>词表是自动记住的</b>：加词、删词、清空、恢复，每一次改动都会立刻存到本地，
+      下次打开窗口还在，不用点「保存设置」。
+      清空某张表 = 这张规则不再起任何作用（等于关掉这一项）。
     </div>
   </div>
 

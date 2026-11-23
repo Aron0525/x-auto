@@ -111,12 +111,11 @@
     PURE_ATTITUDE = pick(cfg && cfg.attitude, DEFAULT_ATTITUDE);
     TOPIC_WORDS_RT = (cfg && cfg.topicWords) ? pick(cfg.topicWords, []) : null;
     /* 场景词格式：{ vent: ["亏","回撤"], content: [...] }。
-     * 兼容 UI 存的扁平数组格式：["vent=亏,回撤", "content=选题,读者"]，
-     * content.js 直接透传时也能正确解析。传 null 用内置默认。 */
-    let sceneObj = null;
+     * 兼容 UI 存的扁平数组格式：["vent=亏,回撤", "content=选题,读者"]。
+     * 传 null/undefined = 用内置默认；传空数组/空对象 = 用户主动清空（禁用场景判断）。 */
     if (cfg && cfg.scene != null) {
+      let sceneObj = {};
       if (Array.isArray(cfg.scene)) {
-        sceneObj = {};
         for (const line of cfg.scene) {
           const m = String(line).match(/^\s*([A-Za-z_]+)\s*[=＝]\s*(.+)$/);
           if (m) sceneObj[m[1]] = m[2].split(/[,，]/).map((x) => x.trim()).filter(Boolean);
@@ -124,8 +123,11 @@
       } else if (typeof cfg.scene === "object") {
         sceneObj = cfg.scene;
       }
+      // 空对象也照实传下去 —— 用户清空了就该停用，不能偷偷回退到默认
+      SCENE_WORDS_RT = sceneObj;
+    } else {
+      SCENE_WORDS_RT = null;
     }
-    SCENE_WORDS_RT = sceneObj && Object.keys(sceneObj).length ? sceneObj : null;
   }
 
   function getRules() {

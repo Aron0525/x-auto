@@ -265,26 +265,26 @@ function reviewBeh() {
 
 // 每张表的定义：key 对应存储字段，getDefault 取出厂值
 const WL_DEFS = [
-  { key: "banned",     mount: "wfBanned",    title: "一票否决词",
-    use: "出现任意一个 → 这条评论直接不发",
+  { key: "banned",     mount: "wfBanned",    title: "1. 一票否决词",
+    use: "出现任意一个 → 这条评论直接不发，不管多少分。出厂含直角引号「」、议论文腔、冒充AI、刷量词",
     getDefault: () => COMMENT_REVIEW.DEFAULT_BANNED },
-  { key: "opinionWords", mount: "wfOpinion", title: "观点词",
-    use: "命中任意一个就能拿观点分（判断/因果/转折/取舍）",
+  { key: "opinionWords", mount: "wfOpinion", title: "2. 观点词",
+    use: "命中任意一个就能拿观点分（最多30分）：判断/因果/转折/取舍，如 但、其实、关键、成本、未必",
     getDefault: () => COMMENT_REVIEW.DEFAULT_OPINION_WORDS },
-  { key: "attitude",   mount: "wfAttitude",  title: "态度词",
-    use: "没有观点时，有明确情绪反应也算及格",
+  { key: "attitude",   mount: "wfAttitude",  title: "3. 态度词",
+    use: "没有观点时的第二道口子：有明确情绪反应也算及格，如 扎心、佩服、离谱、真实、笑死",
     getDefault: () => COMMENT_REVIEW.DEFAULT_ATTITUDE },
-  { key: "aiFlavor",   mount: "wfAi",        title: "AI 腔 / 书面语词",
-    use: "出现就扣人味分，不会一票否决",
+  { key: "aiFlavor",   mount: "wfAi",        title: "4. AI 腔 / 书面语词",
+    use: "出现就扣人味分，不会一票否决：如 综上所述、值得注意的是、赋能、抓手、闭环",
     getDefault: () => COMMENT_REVIEW.DEFAULT_AI_FLAVOR },
-  { key: "fabrication", mount: "wfFab",      title: "编造亲历词",
-    use: "出现就扣人味分",
+  { key: "fabrication", mount: "wfFab",      title: "5. 编造亲历词",
+    use: "同样只扣分：如 我朋友、我公司、亲测 —— 编造亲身经历会降低可信度分",
     getDefault: () => COMMENT_REVIEW.DEFAULT_FABRICATION },
-  { key: "topicWords", mount: "wfTopic",     title: "话题实词",
-    use: "判断评论是否接住帖子的具体内容",
+  { key: "topicWords", mount: "wfTopic",     title: "6. 话题实词",
+    use: "判断评论是不是在这条帖子下说的：帖子和评论里都得出现才算相关，拦掉万能评论",
     getDefault: () => (globalThis.COMMENT_REVIEW.DEFAULT_TOPIC_WORDS || []) },
-  { key: "scene",      mount: "wfScene",     title: "场景词",
-    use: "判断评论和帖子是否同属一个话题方向（格式：场景=词,词）",
+  { key: "scene",      mount: "wfScene",     title: "7. 场景词",
+    use: "判断评论和帖子是否同一类话题。格式：场景名=词,词（一行一个场景，如 vent=亏,回撤,行情）",
     getDefault: () => {
       const obj = globalThis.COMMENT_REVIEW.DEFAULT_SCENE_WORDS || {};
       return Object.entries(obj)
@@ -300,7 +300,8 @@ function wlInit() {
   WL_DEFAULT = {};
   WL_STATE = {};
   for (const def of WL_DEFS) {
-    const base = def.getDefault() || [];
+    // 出厂词表可能有重复（比如默认观点词里「前提」出现两次），先去重
+    const base = Array.from(new Set(def.getDefault() || []));
     WL_DEFAULT[def.key] = new Set(base);
     WL_STATE[def.key] = base.slice();
   }
@@ -328,7 +329,8 @@ function wlRender(key) {
     `<div class="wlAdd">` +
       `<input type="text" id="wlIn_${key}" placeholder="输入一个词，按回车添加">` +
       `<button class="ghost" data-addk="${key}">添加</button>` +
-      `<button class="ghost" data-resetk="${key}">恢复这张表</button>` +
+      `<button class="ghost" data-cleark="${key}" title="清空这张表（等于关掉这项规则）">清空</button>` +
+      `<button class="ghost" data-resetk="${key}">恢复出厂</button>` +
     `</div>`;
 
   // 绑定：添加
@@ -343,17 +345,36 @@ function wlRender(key) {
       if (!WL_STATE[key].includes(p)) { WL_STATE[key].push(p); added++; }
     }
     inp.value = "";
-    if (added) { wlRender(key); syncRulesToEngine(); $(`wlIn_${key}`).focus(); }
-    else { $(`wlMsg`).textContent = `「${parts[0]}」已经在表里了`; }
+    if (added) {
+      wlRender(key);
+      syncRulesToEngine();
+      wlAutoSave();
+      $(`wlIn_${key}`).focus();
+    } else {
+      $(`wlMsg`).textContent = `「${parts[0]}」已经在表里了`;
+    }
   };
   inp.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); doAdd(); }
   });
   box.querySelector(`[data-addk="${key}"]`).addEventListener("click", doAdd);
+
+  /* 清空这张表：清完自动记住。清空 = 这张规则不再起作用。 */
+  box.querySelector(`[data-cleark="${key}"]`).addEventListener("click", () => {
+    const n = (WL_STATE[key] || []).length;
+    if (!n) { $(`wlMsg`).textContent = `「${def.title}」本来就是空的`; return; }
+    WL_STATE[key] = [];
+    wlRender(key);
+    syncRulesToEngine();
+    wlAutoSave();
+    $(`wlMsg`).textContent = `已清空「${def.title}」${n} 个词 → 这项规则不再生效`;
+  });
+
   box.querySelector(`[data-resetk="${key}"]`).addEventListener("click", () => {
     WL_STATE[key] = Array.from(WL_DEFAULT[key]);
     wlRender(key);
     syncRulesToEngine();                    // 恢复后立即生效
+    wlAutoSave();
     $(`wlMsg`).textContent = `「${def.title}」已恢复出厂 ${WL_STATE[key].length} 个词`;
   });
   // 绑定：删除
@@ -363,6 +384,7 @@ function wlRender(key) {
       WL_STATE[key] = WL_STATE[key].filter((x) => x !== w);
       wlRender(key);
       syncRulesToEngine();                  // 删除后立即生效
+      wlAutoSave();                          // 并自动记住
     });
   });
 }
@@ -394,12 +416,38 @@ function wlCollect() {
   for (const def of WL_DEFS) {
     const cur = WL_STATE[def.key] || [];
     const base = WL_DEFAULT[def.key];
-    // 和出厂值一样就不存，省空间也便于以后改出厂值时自动跟着变
-    const same = cur.length === base.size && cur.every((w) => base.has(w));
-    if (!same) out[def.key] = cur;
-    else out[def.key] = null;      // null = 用出厂值
+    /* 和出厂值一样就存 null（省空间，以后改代码出厂值能自动跟随）。
+     * 比较时先按集合去重，避免出厂表里有重复词导致"没改也算改过"。
+     * 注意：用户清空后 cur 是空数组，长度和 base 不同 → 会存 []，清空状态被记住。 */
+    const uniqCur = Array.from(new Set(cur));
+    const same = uniqCur.length === base.size && uniqCur.every((w) => base.has(w));
+    out[def.key] = same ? null : cur;
   }
   return out;
+}
+
+/* 【自动记住】用户要求词表改完不用点保存也要记住。
+ * 增词、删词、清空、恢复之后都调它，直接写进 xa_settings.review_rules。
+ * 合并保存，不碰其它字段。 */
+let wlSaveTimer = null;
+function wlAutoSave() {
+  clearTimeout(wlSaveTimer);
+  wlSaveTimer = setTimeout(async () => {
+    try {
+      const cur = (await chrome.storage.local.get(["xa_settings"])).xa_settings || {};
+      await chrome.storage.local.set({
+        xa_settings: { ...cur, review_rules: wlCollect() },
+      });
+      const el = $("wlMsg");
+      if (el) {
+        const t = new Date().toLocaleTimeString();
+        el.textContent = `词表已自动记住（${t}）`;
+      }
+    } catch (e) {
+      const el = $("wlMsg");
+      if (el) el.textContent = "自动记住失败：" + String((e && e.message) || e);
+    }
+  }, 300);
 }
 
 /* 场景词是特殊格式（场景=词,词），单独解析成对象 */
@@ -663,7 +711,20 @@ $("wlResetAll").onclick = () => {
   wlInit();
   wlRenderAll();
   syncRulesToEngine();
-  $("wlMsg").textContent = "已全部恢复出厂词表（点保存生效）";
+  wlAutoSave();
+  $("wlMsg").textContent = "已全部恢复出厂词表，并已自动记住";
+};
+
+/* 一键清空全部词表：七张表全变空 → 审核基本不起作用（只剩长度/重复这类代码判定）。
+ * 清空后自动记住，下次打开还是空的。 */
+$("wlClearAll").onclick = () => {
+  const total = WL_DEFS.reduce((n, d) => n + ((WL_STATE[d.key] || []).length), 0);
+  if (!confirm(`确定清空全部七张词表吗？共 ${total} 个词。\n\n清空后：一票否决/观点/态度/AI腔/编造/话题/场景 这些规则都不再起作用。\n可以用「全部恢复出厂词表」找回。`)) return;
+  for (const def of WL_DEFS) WL_STATE[def.key] = [];
+  wlRenderAll();
+  syncRulesToEngine();
+  wlAutoSave();
+  $("wlMsg").textContent = `已清空全部 ${total} 个词，并已自动记住`;
 };
 
 // 提示词：切换 / 新建 / 删除
