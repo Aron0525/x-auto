@@ -948,6 +948,10 @@
       min_read_before_refresh: s.min_read_before_refresh ?? 12,
       dedup_comment: s.dedup_comment !== false,
       focus_keywords: s.focus_keywords || "",
+      // 三道基础检查：默认全开，只有显式 false 才是关（面板可单独开关）
+      check_validate: s.check_validate !== false,
+      check_echo: s.check_echo !== false,
+      check_opinion: s.check_opinion !== false,
       // 我的账号名（测试号/正式号都填，逗号分隔）——用于「不碰自己帖子」判定
       my_handles: s.my_handles || "",
       follow_per_session: s.follow_per_session ?? 5,

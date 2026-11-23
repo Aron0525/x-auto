@@ -688,18 +688,32 @@ globalThis.COMMENT_GEN = (() => {
     return a;
   }
 
+  /* 三道基本检查的开关（用户要求可单独开关）。
+   * 默认全开。存 undefined/null/true 都是开，只有显式 false 才是关。 */
+  function checkOn(beh, name) {
+    return !beh || beh["check_" + name] !== false;
+  }
+
   async function generateMine(post, body, beh, llmCfg) {
     const { lo, hi } = SOP.commentLength(beh);
     const len = lo + Math.floor(Math.random() * (hi - lo + 1));   // 每次随机一个目标长度
     const tryAccept = (raw) => {
       const t = clean(raw).replace(/[。！？!?]+$/, (m) => m);
       if (!t) return null;
-      const [ok] = SOP.validateComment(t, post, beh);
-      if (!ok) return null;
+      /* 【用户要求】三道基本检查可单独开关。
+       * 关掉那道就跳过，模型写什么都能过那道。 */
+      if (checkOn(beh, "validate")) {
+        const [ok] = SOP.validateComment(t, post, beh);
+        if (!ok) return null;
+      }
       // 【硬拦截】复述作者的话 = 身份错位
-      if (echoesAuthor(t, post)) return null;
+      if (checkOn(beh, "echo")) {
+        if (echoesAuthor(t, post)) return null;
+      }
       // 【硬拦截】没有观点 = 废话（「刷到一位兄弟我收藏了」这类）
-      if (!hasOpinion(t)) return null;
+      if (checkOn(beh, "opinion")) {
+        if (!hasOpinion(t)) return null;
+      }
       return t;
     };
 
@@ -749,7 +763,8 @@ globalThis.COMMENT_GEN = (() => {
         const cleaned = clean(raw).replace(/[。！？!?]+$/, (m) => m);
         if (cleaned) {
           // ① 先单独判复述——给出针对性的重写指令，比笼统说"不合格"有效得多
-          if (echoesAuthor(cleaned, post)) {
+          //    （开关关掉复述检查时，这条也一起跳过，不再用"复述"当重写理由）
+          if (checkOn(beh, "echo") && echoesAuthor(cleaned, post)) {
             feedback = `\n\n【上一版的问题】你复述了作者说过的话（"${cleaned.slice(0, 30)}"）。` +
                        `记住：作者是你评论的对象，他做的事不是你的。请用你自己的视角重新写一句，` +
                        `不要再出现他原话里的表述。`;
@@ -796,6 +811,6 @@ globalThis.COMMENT_GEN = (() => {
   }
 
   return { generate, classifyScene, classifyPost, generateMine, applyCustom, tryTemplates,
-           isDuplicate, setHistory, pushHistory, sim, hasOpinion, echoesAuthor,
+           isDuplicate, setHistory, pushHistory, sim, hasOpinion, echoesAuthor, checkOn,
            DEFAULT_MINE_PROMPT, DEFAULT_MINE_TEMPLATES, MINE_TEMPLATES_BY_SCENE };
 })();

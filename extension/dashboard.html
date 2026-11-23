@@ -331,6 +331,21 @@
           <div class="row"><label>评论去重</label><input type="checkbox" id="dedup_comment">
             <span class="hint">同一帖只回一次</span></div>
 
+          <!-- 三道基础检查：生成时把关，各自可开关。
+              说明：这是模型生成评论时的三道硬门槛，和下方「发送前审核」不是一回事 -->
+          <div style="margin-top:14px;padding-top:12px;border-top:1px solid #2f3336">
+            <div class="row" style="margin-bottom:6px">
+              <label style="font-weight:600">基础检查（生成时把关）</label>
+              <span class="hint">三道都默认开着；关掉任意一道，生成时就跳过它，模型写什么都能过</span>
+            </div>
+            <div class="row"><label>① 基本校验</label><input type="checkbox" id="check_validate">
+              <span class="hint">空评论 / 纯符号 / 少于4字 / 互关互赞 不许发</span></div>
+            <div class="row"><label>② 身份检查</label><input type="checkbox" id="check_echo">
+              <span class="hint">作者做的事不能被你当成自己的说</span></div>
+            <div class="row"><label>③ 观点检查</label><input type="checkbox" id="check_opinion">
+              <span class="hint">要有观点、态度或提问；纯附和（说得好/学到了）算废话</span></div>
+          </div>
+
           <!-- 评论审核：默认关闭。开关就在主控制台，不用进子窗口 -->
           <div style="margin-top:14px;padding-top:12px;border-top:1px solid #2f3336">
             <div class="row" style="margin-bottom:6px">

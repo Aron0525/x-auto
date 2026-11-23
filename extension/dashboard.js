@@ -76,6 +76,10 @@ async function loadSettings() {
    * 及格线也跟着读，但开关关着的时候它不生效。 */
   $("review_enabled").checked = s.review_enabled === true;
   $("review_threshold").value = s.review_threshold ?? 60;
+  /* 三道基础检查：默认全开，只有存了显式 false 才是关 */
+  $("check_validate").checked = s.check_validate !== false;
+  $("check_echo").checked = s.check_echo !== false;
+  $("check_opinion").checked = s.check_opinion !== false;
   updateReviewState();
   updateKeyState();
   const sum = $("ruleSummary");
@@ -287,6 +291,10 @@ async function saveSettings() {
    * 那样 review_enabled === true 永远不成立，开关就永远打不开。 */
   s.review_enabled = $("review_enabled").checked;
   s.review_threshold = Math.max(0, Math.min(100, parseInt($("review_threshold").value, 10) || 60));
+  /* 三道基础检查：显式存布尔，和审核开关同理（避开通用循环的 "on" 字符串） */
+  s.check_validate = $("check_validate").checked;
+  s.check_echo = $("check_echo").checked;
+  s.check_opinion = $("check_opinion").checked;
 
   // 关键：与已有设置**合并**，不能整体替换。
   // 侧边栏和这个控制台字段不完全相同，整体替换会互相抹掉对方保存的字段

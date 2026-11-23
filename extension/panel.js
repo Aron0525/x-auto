@@ -37,6 +37,10 @@ async function loadSettings() {
   /* 评论审核：侧边栏也能开关、改及格线。默认关闭。 */
   if ($("review_enabled")) $("review_enabled").checked = s.review_enabled === true;
   if ($("review_threshold")) $("review_threshold").value = s.review_threshold ?? 60;
+  /* 三道基础检查：默认全开，只有存了显式 false 才是关 */
+  if ($("check_validate")) $("check_validate").checked = s.check_validate !== false;
+  if ($("check_echo")) $("check_echo").checked = s.check_echo !== false;
+  if ($("check_opinion")) $("check_opinion").checked = s.check_opinion !== false;
   updateReviewHint();
   return s;
 }
@@ -72,6 +76,10 @@ async function saveSettings() {
   s.review_threshold = $("review_threshold")
     ? Math.max(0, Math.min(100, parseInt($("review_threshold").value, 10) || 60))
     : 60;
+  /* 三道基础检查：显式存布尔 */
+  s.check_validate = $("check_validate") ? $("check_validate").checked : true;
+  s.check_echo = $("check_echo") ? $("check_echo").checked : true;
+  s.check_opinion = $("check_opinion") ? $("check_opinion").checked : true;
   // 合并而不是整体替换：控制台独有的字段（speed/feed 等）不能被抹掉
   const cur = (await chrome.storage.local.get(["xa_settings"])).xa_settings || {};
   await chrome.storage.local.set({ xa_settings: { ...cur, ...s } });
