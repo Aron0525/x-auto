@@ -213,19 +213,62 @@ async function inputHotkey(tabId, keys) {
 // ---------------- LLM 代发（内容脚本 fetch 会被 CORS 拦）----------------
 
 async function llmChat({ system, user, cfg }) {
+  /* 外层做一次「被截断就加预算重试」：
+   * 推理型模型第一次可能把 token 全花在思考上，正文为空、finish_reason=length。
+   * 这种情况不是真的失败，加大 max_tokens 再要一次基本就有了。 */
+  let lastErr = null;
+  for (const budget of [800, 2000]) {
+    try {
+      return await llmCallOnce({ system, user, cfg, maxTokens: budget });
+    } catch (e) {
+      lastErr = e;
+      const msg = String((e && e.message) || e);
+      // 只有「被截断导致空内容」才值得加大预算重试，别的错（401/余额）重试没意义
+      if (!msg.includes("finish_reason=length")) throw e;
+    }
+  }
+  throw lastErr;
+}
+
+async function llmCallOnce({ system, user, cfg, maxTokens }) {
   const resp = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },
     body: JSON.stringify({
       model: cfg.model,
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      temperature: 0.9, max_tokens: 200,
+      temperature: 0.9,
+      /* 【必须给足】以前是 200，推理型模型（deepseek-v4 / reasoner 等）
+       * 光思考就要吃掉几百 token，留给正文的预算不够 → 直接返回空 content，
+       * 界面就报「模型接口没有返回内容」，看着像 API 挂了，其实是被截断。
+       * 评论才几十个字，给 800 完全够。 */
+      max_tokens: maxTokens || 800,
     }),
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(45000),
   });
-  if (!resp.ok) throw new Error(`LLM HTTP ${resp.status}`);
+  if (!resp.ok) {
+    // 把服务端返回的错误正文带出来（余额不足/参数错都会写在这里）
+    let detail = "";
+    try { detail = (await resp.text()).slice(0, 200); } catch (e) {}
+    throw new Error(`LLM HTTP ${resp.status}${detail ? " · " + detail : ""}`);
+  }
   const j = await resp.json();
-  return (j.choices?.[0]?.message?.content || "").trim();
+  const ch = (j.choices && j.choices[0]) || {};
+  const msg = ch.message || {};
+  let content = String(msg.content || "").trim();
+  /* 有的模型（推理型）把话放在 reasoning_content / reasoning 里，
+   * content 反而是空的。这里兜一层，不然明明有输出却当成"没返回内容"。 */
+  if (!content) {
+    const alt = msg.reasoning_content || msg.reasoning || ch.text || "";
+    content = String(alt || "").trim();
+  }
+  if (!content) {
+    /* 还是一点内容都没有：把 finish_reason 带出去，
+     * length = 被 max_tokens 截断，content_filter = 被内容审核拦，
+     * stop = 模型正常结束但确实没说话（提示词问题）。 */
+    throw new Error(`模型返回空内容（finish_reason=${ch.finish_reason || "未知"}，model=${cfg.model}）`);
+  }
+  return content;
 }
 
 // ---------------- 轮次调度：在随机区间内自动开新一轮 ----------------
