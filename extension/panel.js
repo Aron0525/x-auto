@@ -37,10 +37,10 @@ async function loadSettings() {
   /* 评论审核：侧边栏也能开关、改及格线。默认关闭。 */
   if ($("review_enabled")) $("review_enabled").checked = s.review_enabled === true;
   if ($("review_threshold")) $("review_threshold").value = s.review_threshold ?? 60;
-  /* 三道基础检查：默认**全关**（用户要求"生成什么就发什么"），只有 true 才开 */
-  if ($("check_validate")) $("check_validate").checked = s.check_validate === true;
-  if ($("check_echo")) $("check_echo").checked = s.check_echo === true;
-  if ($("check_opinion")) $("check_opinion").checked = s.check_opinion === true;
+  /* 三道基础检查：默认**全关**（生成什么就发什么），存 guard_* 新字段 */
+  if ($("check_validate")) $("check_validate").checked = s.guard_validate === true;
+  if ($("check_echo")) $("check_echo").checked = s.guard_echo === true;
+  if ($("check_opinion")) $("check_opinion").checked = s.guard_opinion === true;
   updateReviewHint();
   return s;
 }
@@ -76,10 +76,10 @@ async function saveSettings() {
   s.review_threshold = $("review_threshold")
     ? Math.max(0, Math.min(100, parseInt($("review_threshold").value, 10) || 60))
     : 60;
-  /* 三道基础检查：显式存布尔 */
-  s.check_validate = $("check_validate") ? $("check_validate").checked : true;
-  s.check_echo = $("check_echo") ? $("check_echo").checked : true;
-  s.check_opinion = $("check_opinion") ? $("check_opinion").checked : true;
+  /* 三道基础检查：存 guard_* 字段（默认关） */
+  s.guard_validate = $("check_validate") ? $("check_validate").checked : false;
+  s.guard_echo = $("check_echo") ? $("check_echo").checked : false;
+  s.guard_opinion = $("check_opinion") ? $("check_opinion").checked : false;
   // 合并而不是整体替换：控制台独有的字段（speed/feed 等）不能被抹掉
   const cur = (await chrome.storage.local.get(["xa_settings"])).xa_settings || {};
   await chrome.storage.local.set({ xa_settings: { ...cur, ...s } });

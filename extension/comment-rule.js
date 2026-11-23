@@ -117,10 +117,10 @@ async function load() {
   $("tone").value = s.tone || "friendly";
   $("review_enabled").checked = s.review_enabled === true;   // 默认关闭
   $("review_threshold").value = s.review_threshold ?? 60;
-  /* 三道基础检查：默认全关（用户要求"生成什么就发什么"），只有 true 才开 */
-  $("check_validate").checked = s.check_validate === true;
-  $("check_echo").checked = s.check_echo === true;
-  $("check_opinion").checked = s.check_opinion === true;
+  /* 三道基础检查：默认全关，存 guard_* 新字段（旧 check_* 值不认） */
+  $("check_validate").checked = s.guard_validate === true;
+  $("check_echo").checked = s.guard_echo === true;
+  $("check_opinion").checked = s.guard_opinion === true;
 
   /* 审核词表：读回用户改过的版本，没改过的用出厂值 */
   wlLoad(s.review_rules || null);
@@ -427,7 +427,7 @@ function syncRulesToEngine() {
   });
 }
 
-function renderPosts(results) {
+function renderPosts(results, errs) {
   const box = $("postList");
   if (!POSTS.length) {
     box.innerHTML = '<div class="item" style="color:#71767b">列表是空的，点「加一条」自己写帖子，或点「重新读取帖子」拉取。</div>';
@@ -435,10 +435,14 @@ function renderPosts(results) {
   }
   box.innerHTML = POSTS.map((p, i) => {
     const r = results[i];
+    const err = (errs && errs[i]) || "";
     let cmt = "";
     if (r === undefined) cmt = "";
-    else if (!r) cmt = '<div class="cmt bad">没有生成出合格评论</div>';
-    else {
+    else if (!r) {
+      /* 失败要写清真实原因：是 API 不通、没配 Key，还是模型写的不合格。
+       * 以前一律显示「没有生成出合格评论」，根本没法排查。 */
+      cmt = `<div class="cmt bad">✗ ${escapeHtml(err || "没有生成出合格评论")}</div>`;
+    } else {
       // 直接显示审核分数，一眼看出这条会不会被拦
       let badge = "";
       let willBlock = false;
@@ -530,13 +534,15 @@ async function generateAll(useLlm) {
   renderPosts([]);
 
   const results = [];
-  let lastErr = "";                 // 最后一条失败原因，批量结束时显示
+  const errs = [];                    // 每条各自的失败原因
+  let lastErr = "";                   // 最后一条失败原因，批量结束时显示
   let failCount = 0;
   for (let k = 0; k < targets.length; k++) {
     const i = targets[k];
     $("genMsg").textContent = `生成中… ${k + 1}/${targets.length}`;
     try {
       let r = "";
+      let g = null;
       if (useLlm) {
         /* generateMine(post, body, beh, llmCfg) —— 第二个参数是**帖子正文**，
          * 不是提示词。以前这里传了 $("comment_prompt").value，导致模型拿到的
@@ -545,7 +551,7 @@ async function generateAll(useLlm) {
           // 预览时用窗口里当前编辑的提示词（还没保存也能试）
           comment_prompt: $("comment_prompt") ? $("comment_prompt").value : "",
         });
-        const g = await COMMENT_GEN.generateMine(
+        g = await COMMENT_GEN.generateMine(
           { text: POSTS[i].text }, POSTS[i].text, beh2, LLM);
         r = (g && g.text) || "";
         if (!r) {
@@ -556,17 +562,48 @@ async function generateAll(useLlm) {
       /* 【已取消模板兜底】不再退回 tryTemplates。
        * 模型给不出合格句子就显示空，让你直接看到提示词的真实效果。 */
       results[i] = r || null;
+      if (!r) {
+        if (g && g.error) errs[i] = g.error;
+        else if (g && g.source) errs[i] = "生成失败（" + g.source + "）";
+        else if (!useLlm) errs[i] = "没配 API，无法生成";
+        else errs[i] = "模型没有返回内容";
+      }
     } catch (e) {
       results[i] = null;
       failCount++;
-      lastErr = String(e && e.message || e);
+      errs[i] = String(e && e.message || e);
+      lastErr = errs[i];
     }
-    renderPosts(results);
+    renderPosts(results, errs);
   }
   const ok = results.filter(Boolean).length;
   const tail = useLlm ? "（全部调用模型，无模板兜底）" : "（未填 API Key，无法生成）";
   $("genMsg").textContent = `完成：${ok}/${targets.length} 条生成成功${tail}` +
     (failCount && lastErr ? ` · 失败原因：${lastErr}` : "");
+}
+
+/* 单独测一次模型：直接发一句最短的话，把原始返回/错误显示出来。
+ * 目的：分清「API 根本不通」和「通了但评论被拦」，不用靠猜。 */
+async function testApiOnce() {
+  const el = $("genMsg");
+  if (!LLM.apiKey || !LLM.baseUrl || !LLM.model) {
+    el.textContent = "没配 API：去主控制台「API 配置」里填 Key / 地址 / 模型名";
+    return;
+  }
+  el.textContent = "正在测试模型…";
+  try {
+    const r = await chrome.runtime.sendMessage({
+      t: "llm",
+      system: "你是一个会用中文回复的助手。",
+      user: "只回复四个字：连接正常",
+      cfg: { apiKey: LLM.apiKey, baseUrl: LLM.baseUrl, model: LLM.model },
+    });
+    if (!r) el.textContent = "测试失败：接口没有返回任何内容（检查地址是否正确）";
+    else if (r.__error) el.textContent = "测试失败：" + r.__error;
+    else el.textContent = "模型通了，它回的是：" + String(r).slice(0, 80);
+  } catch (e) {
+    el.textContent = "测试失败：" + String((e && e.message) || e);
+  }
 }
 
 // ---------------- 保存 ----------------
@@ -581,10 +618,10 @@ async function save() {
     else if (CHK.includes(f)) s[f] = el.checked;
     else s[f] = el.value;
   }
-  /* 三道基础检查：显式存布尔，默认关（用户要求生成什么就发什么） */
-  s.check_validate = $("check_validate") ? $("check_validate").checked : false;
-  s.check_echo = $("check_echo") ? $("check_echo").checked : false;
-  s.check_opinion = $("check_opinion") ? $("check_opinion").checked : false;
+  /* 三道基础检查：存 guard_* 字段（默认关） */
+  s.guard_validate = $("check_validate") ? $("check_validate").checked : false;
+  s.guard_echo = $("check_echo") ? $("check_echo").checked : false;
+  s.guard_opinion = $("check_opinion") ? $("check_opinion").checked : false;
 
   // 把当前编辑框内容写回这套提示词
   const cur = curPrompt();
@@ -687,6 +724,7 @@ $("clearPosts").onclick = () => {
   $("genMsg").textContent = "已清空，点「加一条」自己写";
 };
 $("genAll").onclick = () => generateAll(true);
+$("testApi").onclick = testApiOnce;
 // 「只用模板生成」按钮已删除：模板兜底已取消，留着会误导（点了什么都不会出）
 $("save").onclick = save;
 $("close").onclick = () => window.close();

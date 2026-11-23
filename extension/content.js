@@ -949,10 +949,10 @@
       dedup_comment: s.dedup_comment !== false,
       focus_keywords: s.focus_keywords || "",
       // 三道基础检查：默认**全关**（用户要求"暂时不用所有审核，生成什么就发什么"）。
-      // 只有显式 true 才开。和审核开关一致：undefined/缺失 = 关。
-      check_validate: s.check_validate === true,
-      check_echo: s.check_echo === true,
-      check_opinion: s.check_opinion === true,
+      // 存的是 guard_* 字段（新名字），旧的 check_* 值一律不认，保证默认关。
+      check_validate: s.guard_validate === true,
+      check_echo: s.guard_echo === true,
+      check_opinion: s.guard_opinion === true,
       // 我的账号名（测试号/正式号都填，逗号分隔）——用于「不碰自己帖子」判定
       my_handles: s.my_handles || "",
       follow_per_session: s.follow_per_session ?? 5,
