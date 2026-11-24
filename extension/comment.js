@@ -250,6 +250,10 @@ globalThis.COMMENT_GEN = (() => {
 
 不要解释、不要客套、不加话题标签、不@人、不贴链接、不编造亲身经历，直接输出这句评论本身。
 
+【重要】只输出评论本身这一句话。不要输出你的思考过程，不要复述我给你的要求，
+不要写「用户需要我…」「这条评论应该…」「帖子内容是…」这类分析。
+你写的第一行字就必须是那条可以直接发到帖子下面的评论。
+
 语气：{tone}`;
 
   /* 短句模板池（2026-11-18 第三次重做）。
@@ -446,6 +450,35 @@ globalThis.COMMENT_GEN = (() => {
     if (ATTITUDE_MARKERS.some((m) => t.includes(m))) return true;
     // 问句：提一个具体问题也是有效互动
     if (/[？?]/.test(t) && t.length >= 6) return true;
+    return false;
+  }
+
+  /* 【思考过程检测】—— 这是事故防线，不受任何开关控制，永远生效。
+   *
+   * 真实事故：模型（推理型）把「用户需要我针对这个帖子写一条评论，评论要用中文，
+   * 长度16字左右，角度要换…」这段思考直接当评论发出去了。
+   * 这绝对不能发到 X 上——一眼就是机器，还很蠢。
+   *
+   * 所以只要文本带有"在描述任务/要求/我要怎么写"的特征，一律判为思考过程，
+   * 让模型重写；重试仍是这样就跳过这条。 */
+  const THINKING_MARKERS = [
+    /用户需要我/, /我需要针对/, /我需要写/, /我需要给/,
+    /帖子内容是/, /帖子讲的是/, /这条帖子/, /这个帖子问/,
+    /评论要用/, /评论要/, /评论应该/, /评论应/, /回复要/,
+    /角度要换/, /角度换成/, /换一个角度/, /切入方式/,
+    /要求[:：]/, /格式[:：]/, /长度\s*\d+/,
+    /直接给出?判断/, /直接说看法/, /不要先肯定/,
+    /字数限制/, /字左右.{0,6}语气/,
+  ];
+  function looksLikeThinking(text) {
+    const t = String(text || "");
+    if (!t) return false;
+    // 命中 2 个以上特征才算，避免正常评论里偶然出现一个词被误杀
+    let hits = 0;
+    for (const re of THINKING_MARKERS) if (re.test(t)) hits++;
+    if (hits >= 2) return true;
+    // 或者整句明显是在"安排任务"（含逗号的长句 + 关键词）
+    if (t.length > 60 && /(评论|回复).{0,10}(写|说|要)/.test(t) && /帖子/.test(t)) return true;
     return false;
   }
 
@@ -700,6 +733,9 @@ globalThis.COMMENT_GEN = (() => {
     const tryAccept = (raw) => {
       const t = clean(raw).replace(/[。！？!?]+$/, (m) => m);
       if (!t) return null;
+      /* ① 先拦「思考过程」——不受任何开关控制，永远生效。
+       * 事故场景：模型把「用户需要我针对这个帖子写一条评论…」当评论发出去。 */
+      if (looksLikeThinking(t)) return null;
       /* 【用户要求】三道基本检查可单独开关。
        * 关掉那道就跳过，模型写什么都能过那道。 */
       if (checkOn(beh, "validate")) {
@@ -770,8 +806,15 @@ globalThis.COMMENT_GEN = (() => {
 
         const cleaned = clean(raw).replace(/[。！？!?]+$/, (m) => m);
         if (cleaned) {
-          // ① 先单独判复述——给出针对性的重写指令，比笼统说"不合格"有效得多
-          //    （开关关掉复述检查时，这条也一起跳过，不再用"复述"当重写理由）
+          /* ① 输出成了「思考过程」→ 明确告诉它只要评论本身。
+           * 这是真实事故：模型把「用户需要我针对这个帖子写一条评论…」发了出去。 */
+          if (looksLikeThinking(cleaned)) {
+            feedback = `\n\n【上一版你写的是"思考过程"，不是评论】` +
+                       `不要解释你的思路、不要复述要求、不要写"用户需要我…"。` +
+                       `只输出那一句可以直接发到帖子下面的评论本身。`;
+            continue;
+          }
+          // ② 判复述——给出针对性的重写指令，比笼统说"不合格"有效得多
           if (checkOn(beh, "echo") && echoesAuthor(cleaned, post)) {
             feedback = `\n\n【上一版的问题】你复述了作者说过的话（"${cleaned.slice(0, 30)}"）。` +
                        `记住：作者是你评论的对象，他做的事不是你的。请用你自己的视角重新写一句，` +
@@ -821,5 +864,6 @@ globalThis.COMMENT_GEN = (() => {
 
   return { generate, classifyScene, classifyPost, generateMine, applyCustom, tryTemplates,
            isDuplicate, setHistory, pushHistory, sim, hasOpinion, echoesAuthor, checkOn,
+           looksLikeThinking,
            DEFAULT_MINE_PROMPT, DEFAULT_MINE_TEMPLATES, MINE_TEMPLATES_BY_SCENE };
 })();

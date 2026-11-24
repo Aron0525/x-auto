@@ -1102,7 +1102,11 @@
     return [...document.querySelectorAll("button, div[role='button']")].find((el) => {
       const t = (el.innerText || "").trim();
       if (!t || t.length > 40) return false;
-      if (!/已发布|已推送|Show\s+\d+\s+posts?|显示\s*\d+\s*条|\d+\s*posts?|新帖子|新帖子?显示|new\s+posts?/i.test(t)) return false;
+      /* 中文界面常见写法：「显示 175 帖子」「显示 12 条帖子」——注意是「帖子」不是「条」，
+       * 旧正则只写了 显示N条，所以中文站点上这颗按钮一直没被认出来。 */
+      if (!/已发布|已推送|Show\s+\d+\s+posts?|\d+\s*posts?|new\s+posts?/i.test(t)
+          && !/^\s*显示\s*\d+\s*(条|个|帖子|条帖子|个帖子)?\s*(帖子)?\s*$/i.test(t)
+          && !/新帖子|新帖/.test(t)) return false;
       const r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0;      // 必须是可见的
     }) || null;

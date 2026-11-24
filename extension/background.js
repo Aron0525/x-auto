@@ -213,18 +213,19 @@ async function inputHotkey(tabId, keys) {
 // ---------------- LLM 代发（内容脚本 fetch 会被 CORS 拦）----------------
 
 async function llmChat({ system, user, cfg }) {
-  /* 外层做一次「被截断就加预算重试」：
-   * 推理型模型第一次可能把 token 全花在思考上，正文为空、finish_reason=length。
-   * 这种情况不是真的失败，加大 max_tokens 再要一次基本就有了。 */
+  /* 外层做「空内容就加预算重试」：
+   * 推理型模型第一次可能把 token 全花在思考上，正文为空（finish_reason=length 或 stop）。
+   * 这种情况不是真的失败，加大 max_tokens 再要一次基本就有了。
+   * 注意：**绝不把思考内容当回答**，只能靠重试拿到真正的 content。 */
   let lastErr = null;
-  for (const budget of [800, 2000]) {
+  for (const budget of [900, 2400]) {
     try {
       return await llmCallOnce({ system, user, cfg, maxTokens: budget });
     } catch (e) {
       lastErr = e;
       const msg = String((e && e.message) || e);
-      // 只有「被截断导致空内容」才值得加大预算重试，别的错（401/余额）重试没意义
-      if (!msg.includes("finish_reason=length")) throw e;
+      // 只有「正文为空」才值得加大预算重试；401/余额不足这类重试没意义
+      if (!msg.includes("模型返回空内容")) throw e;
     }
   }
   throw lastErr;
@@ -255,18 +256,23 @@ async function llmCallOnce({ system, user, cfg, maxTokens }) {
   const j = await resp.json();
   const ch = (j.choices && j.choices[0]) || {};
   const msg = ch.message || {};
-  let content = String(msg.content || "").trim();
-  /* 有的模型（推理型）把话放在 reasoning_content / reasoning 里，
-   * content 反而是空的。这里兜一层，不然明明有输出却当成"没返回内容"。 */
+  const content = String(msg.content || "").trim();
+
+  /* 【绝对不能用 reasoning 当回答】
+   * 推理型模型的 reasoning_content / reasoning 是它的**思考过程**，
+   * 里面全是「用户需要我针对这个帖子写一条评论…角度要换」这种自言自语。
+   * 上一版为了让"内容为空"的模型也能出结果，把 reasoning 兜成了评论，
+   * 结果直接把这堆思考发到了 X 上 —— 这是严重事故，必须彻底杜绝。
+   *
+   * 现在的规则：只有 content 才是回答。content 空就当成失败，
+   * 由上层加大 token 预算重试；重试还是空就报错跳过，绝不拿思考当评论。 */
   if (!content) {
-    const alt = msg.reasoning_content || msg.reasoning || ch.text || "";
-    content = String(alt || "").trim();
-  }
-  if (!content) {
-    /* 还是一点内容都没有：把 finish_reason 带出去，
-     * length = 被 max_tokens 截断，content_filter = 被内容审核拦，
-     * stop = 模型正常结束但确实没说话（提示词问题）。 */
-    throw new Error(`模型返回空内容（finish_reason=${ch.finish_reason || "未知"}，model=${cfg.model}）`);
+    const thinkLen = String(msg.reasoning_content || msg.reasoning || "").length;
+    throw new Error(
+      `模型返回空内容（finish_reason=${ch.finish_reason || "未知"}` +
+      (thinkLen ? `，思考占用了 ${thinkLen} 字` : "") +
+      `，model=${cfg.model}）`
+    );
   }
   return content;
 }
