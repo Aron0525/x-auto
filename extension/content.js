@@ -138,24 +138,15 @@
     return null;
   }
 
+  /* 落点标定：现在**不再依赖 :hover**。
+   * 每个点击都会用 elementFromPoint 逐个校验（见 clickEl），
+   * 所以这里只把偏移清零即可。以前那套 :hover 标定在标签页不可见时
+   * 永远失败，还会打出「退回直点模式」的误导日志。 */
   async function calibrateOffset() {
-    // 会话开始时用导航锚点学一次系统性偏移
-    for (const sel of [SEL.navHome, SEL.navNotif, '[data-testid="SideNav_NewTweet_Button"]']) {
-      const el = q(sel);
-      if (!el) continue;
-      const r = await stableRect(el);
-      if (r.width <= 0) continue;
-      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-      if (await hoverHits(el, cx + _off.dx, cy + _off.dy)) { _off.calibrated = true; return true; }
-      const hit = await scanForHit(el, cx, cy, 36, 12);
-      if (hit) {
-        _off.dx += hit.dx; _off.dy += hit.dy; _off.calibrated = true;
-        await logAct(`落点已标定：偏移 dx=${_off.dx} dy=${_off.dy}`);
-        return true;
-      }
-    }
-    await logAct("落点标定失败：将逐次校验，点不中就跳过");
-    return false;
+    _off.dx = 0;
+    _off.dy = 0;
+    _off.calibrated = true;
+    return true;
   }
 
   async function clickEl(el, opts = {}) {
@@ -165,11 +156,36 @@
     if (r.width <= 0 || r.height <= 0) return false;
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     let x = cx + _off.dx, y = cy + _off.dy;
-    if (!(await hoverHits(el, x, y))) {
-      // 局部重扫：元素可能被时间线自动滚动挪走，或偏移变了
-      const hit = await scanForHit(el, cx, cy, 24, 8);
-      if (hit) { x = hit.x; y = hit.y; _off.dx += hit.dx; _off.dy += hit.dy; }
-      else { await logAct("落点校验失败：鼠标移不到目标上，跳过这次点击"); return false; }
+
+    /* 几何命中校验：用 elementFromPoint 判断落点是否真的在这个元素上。
+     * 它不依赖 :hover 渲染——标签页在后台时 :hover 永远不亮，
+     * 旧代码会退回「直点模式」完全不校验，带着偏移盲点，很容易点错。 */
+    const geoHit = (px, py) => {
+      const t = document.elementFromPoint(px, py);
+      return !!t && (el === t || el.contains(t) || t.contains(el));
+    };
+
+    if (!geoHit(x, y)) {
+      // 偏移可能已经偏了：清零回到中心重试
+      _off.dx = 0; _off.dy = 0;
+      x = cx; y = cy;
+      if (!geoHit(x, y)) {
+        // 在元素矩形内部小范围找落点（最多到边框内 2px）
+        const maxD = Math.max(2, Math.min(r.width, r.height) / 2 - 2);
+        let found = false;
+        for (let d = 2; d <= maxD && !found; d += 2) {
+          for (const [ox, oy] of [[0, -d], [0, d], [-d, 0], [d, 0],
+                                  [d, d], [-d, -d], [d, -d], [-d, d]]) {
+            const px = Math.min(r.right - 2, Math.max(r.left + 2, cx + ox));
+            const py = Math.min(r.bottom - 2, Math.max(r.top + 2, cy + oy));
+            if (geoHit(px, py)) { x = px; y = py; found = true; break; }
+          }
+        }
+        if (!found) {
+          await logAct("落点校验失败：鼠标移不到目标上，跳过这次点击");
+          return false;
+        }
+      }
     }
     await send({ t: "input", op: "press", x, y, speed: SPD });
     await sleep(opts.settle ? rnd(opts.settle[0] * SPD, opts.settle[1] * SPD)
@@ -476,7 +492,14 @@
     following: { re: /^(Following|正在关注|关注)$/i,            cn: "正在关注" },
   };
 
+  /* 切栏目的全局锁：栏目守卫和主流程可能同时想切，串行化避免连点。 */
+  let feedSwitching = false;
+
   async function switchFeedTab(kind) {
+    if (feedSwitching) {
+      await logAct("已有栏目切换正在进行，这次跳过", "wait");
+      return false;
+    }
     const spec = FEED_LABELS[kind] || FEED_LABELS.for_you;
     /* 【只能点这两个栏目，别的都不许碰】
      * 顶部那一排还有「AI」「创业公司」「商业」「加密」「股票」等用户自建栏目，
@@ -484,20 +507,25 @@
      * 现在只认精确文案，找不到就放弃切换，绝不点别的栏目。 */
     const tabs = [...document.querySelectorAll(SEL.tab)];
     const tab = tabs.find((t) => spec.re.test(norm(t.innerText)));
-    if (!tab) {
+    let target = tab;
+    if (!target) {
       // 退一步：文本里含目标词，且长度很短（排除「创业公司」这类多字栏目）
-      const loose = tabs.find((t) => {
+      target = tabs.find((t) => {
         const tx = norm(t.innerText);
         if (tx.length > 6) return false;
         return kind === "following" ? /following|正在关注/i.test(tx) : /for you|为你推荐/i.test(tx);
       });
-      if (!loose) {
+      if (!target) {
         await logAct(`顶部没有「${spec.cn}」栏目 → 留在当前栏目继续，不去点别的栏目`, "wait");
         return false;
       }
-      return clickFeedTab(loose, spec, kind);
     }
-    return clickFeedTab(tab, spec, kind);
+    feedSwitching = true;
+    try {
+      return await clickFeedTab(target, spec, kind);
+    } finally {
+      feedSwitching = false;
+    }
   }
 
   async function clickFeedTab(tab, spec, kind) {
@@ -1217,17 +1245,49 @@
   // 找顶部横幅下方的刷新按钮（按可见文案，X 会改版、界面语言会变）
   // 中文是「已发布」（截图为证），英文是「Show N posts」「New posts」
   function findNewPostsPill() {
-    return [...document.querySelectorAll("button, div[role='button']")].find((el) => {
-      const t = (el.innerText || "").trim();
-      if (!t || t.length > 40) return false;
-      /* 中文界面常见写法：「显示 175 帖子」「显示 12 条帖子」——注意是「帖子」不是「条」，
-       * 旧正则只写了 显示N条，所以中文站点上这颗按钮一直没被认出来。 */
-      if (!/已发布|已推送|Show\s+\d+\s+posts?|\d+\s*posts?|new\s+posts?/i.test(t)
-          && !/^\s*显示\s*\d+\s*(条|个|帖子|条帖子|个帖子)?\s*(帖子)?\s*$/i.test(t)
-          && !/新帖子|新帖/.test(t)) return false;
+    /* 文案白名单（中英文都要覆盖）：
+     *   显示 35 帖子 / 显示 12 条 / 显示 175 个帖子
+     *   查看新帖子 / 新帖子 / 已发布 / 已推送
+     *   Show 175 posts / 175 posts / New posts
+     * 注意「显示 35 帖子」在 X 上是**发帖框下面、第一条帖子上面**那一行。 */
+    const RES = [
+      /^\s*显示\s*\d+\s*(条|个)?\s*帖子?\s*$/i,
+      /^\s*显示\s*\d+\s*条\s*$/i,
+      /查看新帖子|新帖子|已发布|已推送/i,
+      /Show\s+\d+\s+posts?/i,
+      /^\s*\d+\s*posts?\s*$/i,
+      /new\s+posts?/i,
+    ];
+    const matchText = (t) => !!t && t.length <= 40 && RES.some((re) => re.test(t));
+    const vis = (el) => {
       const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;      // 必须是可见的
-    }) || null;
+      if (r.width < 8 || r.height < 8) return false;
+      if (r.bottom < 0 || r.top > innerHeight) return false;
+      return true;
+    };
+
+    // ① 先找天然可点击的元素
+    const clickables = [...document.querySelectorAll(
+      'button, [role="button"], a[role="button"], div[role="button"]'
+    )];
+    for (const el of clickables) {
+      if (matchText((el.innerText || "").trim()) && vis(el)) return el;
+    }
+    // ② 退一步：任意元素的文本匹配，然后向上找可点击祖先
+    //    （「显示 35 帖子」很可能是个普通 div/span，靠父层接点击）
+    const any = [...document.querySelectorAll("div, span, p")];
+    for (const el of any) {
+      const t = (el.innerText || "").trim();
+      if (!matchText(t) || !vis(el)) continue;
+      let p = el;
+      for (let i = 0; i < 6 && p; i++) {
+        if (p.tagName === "BUTTON" || p.getAttribute("role") === "button" ||
+            p.getAttribute("tabindex") !== null) return p;
+        p = p.parentElement;
+      }
+      return el;                 // 找不到可点击祖先就用它本身
+    }
+    return null;
   }
 
   /* 滚到时间线最上面。用户要求：遇到看过的帖子要先拉到顶部，看有没有「显示 N 帖子」。 */
