@@ -201,8 +201,18 @@
   }
 
   function pageLoading() {
-    // X 的加载转圈；视频音量条也是 progressbar 但带 aria-valuenow，排除
-    return !!document.querySelector('[role="progressbar"]:not([aria-valuenow])');
+    /* 只认**可见**的加载转圈。
+     * 旧写法只要 DOM 里存在 progressbar 就返回 true——但 X 会保留隐藏的
+     * 转圈节点（例如列表底部的占位），导致 waitContent 每次都等满 25 秒超时。
+     * 这就是「切栏目永远超时 → 守卫每 1.5 秒又触发一次」死循环的来源。
+     * 视频音量条也带 progressbar，但都带 aria-valuenow，已排除。 */
+    const bars = [...document.querySelectorAll('[role="progressbar"]:not([aria-valuenow])')];
+    return bars.some((b) => {
+      const r = b.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) return false;          // 隐藏/占位
+      if (r.bottom < 0 || r.top > innerHeight) return false;  // 滚出视口
+      return true;
+    });
   }
 
   async function waitContent(minCount = 1, timeoutMs = 25000, label = "页面", sel = SEL.article) {
@@ -512,6 +522,15 @@
     // 慢网：切栏目后时间线要重新拉取，等内容真的换一批再开始读
     await waitContent(1, 25000, label + " 栏目");
     const changed = await waitTimelineChange(before, 15000, label + " 栏目");
+    /* 点完必须核实：目标栏目是否真的被选中。
+     * 如果还是别的栏目（例如点歪到「创业公司」），要明确报出来，
+     * 否则后面的栏目守卫会一直以为没切成功、反复重试。 */
+    const nowSel = visibleSelectedTab();
+    const nowTx = nowSel ? norm(nowSel.innerText) : "";
+    if (nowTx && !spec.re.test(nowTx)) {
+      await logAct(`✗ 切栏目失败：点完仍然停在「${nowTx}」`, "fail");
+      return false;
+    }
     await logAct(`已切到「${label}」栏目${changed ? "（内容已更新）" : "（内容未见变化，继续）"}`);
     return true;
   }
@@ -942,33 +961,75 @@
   /* ---------- 栏目守卫（定时检测） ----------
    *
    * 背景：X 顶部除了「为你推荐」「正在关注」，用户自己还加了「AI」「创业公司」
-   * 「商业」「加密」「股票」等栏目。以前点错会落到「创业公司」上并停在那里，
-   * 用户明确说不看这个。
-   * 做法：每 1.5 秒检查当前选中的栏目文字，只要不在白名单里就拉回默认栏目。
-   * 连续纠偏失败 3 次就记一条日志（避免刷屏），并强制走 /home。
+   * 「商业」「加密」「股票」等栏目。用户明确说不看这些。
+   * 做法：定期检查当前选中的栏目文字，不在白名单就拉回「为你推荐」。
+   *
+   * 【2026-11-24 修死循环】以前这里每 1.5 秒调一次 switchFeedTab，
+   * 但 switchFeedTab 内部要等 25 秒内容渲染，**不等它结束就再来一次**，
+   * 于是每隔 1-2 秒就并发点一次栏目，日志刷屏：
+   *   ⚠ 当前停在「创业公司」→ 拉回「为你推荐」→ 切栏目：点击「为你推荐」→ 又 ⚠ …
+   * 时间线一直在重新加载，永远读不到帖子。
+   *
+   * 现在加三道约束：
+   *   ① 防重入：上一次纠偏没结束，这次直接跳过
+   *   ② 冷却：两次纠偏至少间隔 8 秒
+   *   ③ 放弃：连续 3 次纠不回来 → 停 2 分钟，绝不无限循环
    */
   let feedFixTries = 0;
+  let feedFixBusy = false;
+  let feedFixLastAt = 0;
+  let feedGiveUpUntil = 0;
+
+  /* 只认「可见并且确实选中」的那个栏目。
+   * X 会保留一些不可见的旧节点，直接取第一个 aria-selected=true
+   * 可能读到已卸载的「创业公司」，造成误判。 */
+  function visibleSelectedTab() {
+    const tabs = [...document.querySelectorAll(SEL.tab)].filter((t) => {
+      if (t.getAttribute("aria-selected") !== "true") return false;
+      const r = t.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) return false;         // 隐藏节点
+      if (r.bottom < 0 || r.top > innerHeight) return false; // 不在视口
+      return true;
+    });
+    if (!tabs.length) return null;
+    // 多个候选时优先能识别出白名单文案的那个
+    return tabs.find((t) => {
+      const x = norm(t.innerText);
+      return FEED_LABELS.for_you.re.test(x) || FEED_LABELS.following.re.test(x);
+    }) || tabs[0];
+  }
+
   function checkFeedTab() {
     if (!ctx || !ctx.run || !onHome()) { feedFixTries = 0; return; }
-    const curTab = [...document.querySelectorAll(SEL.tab)]
-      .find((t) => t.getAttribute("aria-selected") === "true");
+    if (feedFixBusy) return;                        // ① 防重入
+    if (Date.now() < feedGiveUpUntil) return;       // ③ 已进入放弃期
+    const curTab = visibleSelectedTab();
     if (!curTab) return;
     const tx = norm(curTab.innerText);
     if (!tx) return;
     // 白名单：只有这两个栏目算「我们在的」
     const ok = FEED_LABELS.for_you.re.test(tx) || FEED_LABELS.following.re.test(tx);
     if (ok) { feedFixTries = 0; return; }
-    // 不在白名单 → 记一次并纠偏
+    // ② 冷却：别每 1.5 秒就点一次
+    if (Date.now() - feedFixLastAt < 8000) return;
+    feedFixLastAt = Date.now();
     feedFixTries++;
     if (feedFixTries === 1) {
       logAct(`⚠ 当前停在「${tx}」栏目（不在允许范围）→ 拉回「为你推荐」`, "warn").catch(() => {});
     }
     if (feedFixTries > 3) {
       feedFixTries = 0;
-      goHome().catch(() => {});        // 反复纠不回来就整页回首页
+      feedGiveUpUntil = Date.now() + 60e3;
+      /* 纠不回来就别在这里耗着，更不能继续读「创业公司」的内容。
+       * 直接硬导航到 /home —— X 打开 /home 默认就是「为你推荐」。 */
+      logAct("连续 3 次没拉回白名单栏目 → 重新打开 /home 归位", "fail").catch(() => {});
+      location.assign("/home");
       return;
     }
-    switchFeedTab("for_you").catch(() => {});
+    feedFixBusy = true;
+    switchFeedTab("for_you")
+      .catch(() => {})
+      .finally(() => { feedFixBusy = false; });
   }
 
   async function getBeh() {
@@ -1180,17 +1241,33 @@
     return (window.scrollY || 0) <= 4;
   }
 
-  /* 有「显示 N 帖子」就点它拉新帖。
-   * 返回 true = 点成功且时间线确实变了。 */
+  /* 有「显示 N 帖子 / 查看新帖子」就点它拉新帖。
+   * 返回 true = 点完后**真的出现了没读过的新帖**（用帖子 id 判断，不看 DOM 签名）。
+   *
+   * 为什么不能只看签名：点一下按钮 X 会重渲染整列，签名必然变，
+   * 但内容还是那几条——以前就因此每隔两秒点一次，永远读不到新帖。
+   * 另外加 45 秒冷却，同一颗按钮不反复点。 */
   async function clickNewPostsPillIfAny(where = "") {
     const pill = findNewPostsPill();
     if (!pill) return false;
+    if (ctx && ctx.pillLastAt && Date.now() - ctx.pillLastAt < 45e3) return false;
     const label = ((pill.innerText || "").trim()).slice(0, 20);
-    const beforeSig = timelineSig();
+    const beforeIds = new Set(readTweets(12).map((t) => t.id));
     if (!(await clickEl(pill, { settle: [1500, 2600] }))) return false;
+    if (ctx) ctx.pillLastAt = Date.now();
     await logAct(`${where ? where + " → " : ""}发现顶部「${label}」，点它拉新帖`, "nav");
-    const changed = await waitTimelineChange(beforeSig, 12000, "拉新帖");
-    return !!changed;
+    // 等它把新帖插进来，再用「有没有没读过的 id」判断成功
+    for (let i = 0; i < 6; i++) {
+      await sleep(rnd(600, 1000) * SPD);
+      const now = readTweets(12);
+      const freshOnes = now.filter((t) => !beforeIds.has(t.id) && !(ctx && ctx.seen.includes(t.id)));
+      if (freshOnes.length) {
+        await logAct(`「${label}」生效：拉到 ${freshOnes.length} 条没读过的新帖`, "judge");
+        return true;
+      }
+    }
+    await logAct(`点了「${label}」但没有新内容（可能确实没有新帖）`, "wait");
+    return false;
   }
 
   /* 停止信号：停止时不仅设 ctx.run=false，还要让**正在执行的步骤立即中断**。
@@ -1335,7 +1412,13 @@
         await sleep(rnd(2500, 5000) * SPD);
         return;
       }
-
+      /* 双击刷新也限流：60 秒内只刷一次，否则会变成"刷-读-没有-刷"高频循环，
+       * 平台侧看就是异常刷新行为。 */
+      if (ctx.dblLastAt && Date.now() - ctx.dblLastAt < 60e3) {
+        await sleep(rnd(5000, 9000) * SPD);
+        return;
+      }
+      ctx.dblLastAt = Date.now();
       await logAct("连续没有新帖 → 双击左侧栏「主页」刷新时间线", "nav");
       const refreshed = await doubleClickNav(SEL.navHome, "首页");
       ctx.homeReads = 0; ctx.oldSince = 0; ctx.scrollTries = 0; ctx.noNewRounds = 0;
