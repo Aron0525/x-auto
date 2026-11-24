@@ -17,3 +17,7 @@ Thumbs.db
 # ---- 编辑器 ----
 .vscode/
 .idea/
+
+# ---- 浏览器 Profile（含 API Key / 登录态 / 缓存，绝不提交）----
+edge-test/
+edge-official/
