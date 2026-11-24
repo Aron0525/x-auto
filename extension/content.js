@@ -273,38 +273,13 @@
     return false;
   }
 
-  /* 遇到重复/旧帖子时的处理（用户要求：直接双击主页刷新）。
-   * 返回 "home" | "scrolled" | "timeout"。
-   *
-   * 【2026-11-24 简化】原来还要去找并点击「显示 N 帖子」按钮，
-   * 但那个按钮经常被顶部的固定栏挡住，elementFromPoint 校验通不过，
-   * 反复重试造成 "落点校验失败" 刷屏。用户要求：去掉点按钮，只双击主页。 */
-  async function refreshOrTop(reason) {
-    const before = timelineSig();
-
-    // ---- 1) 双击主页（唯一刷新手段）----
-    await logAct(`${reason} → 双击左侧栏「主页」刷新`, "nav");
-    if (await doubleClickNav(SEL.navHome, "首页")) {
-      if (timelineSig() !== before) return "home";
-    }
-
-    // ---- 2) 往下滑（老内容可能还没翻完）----
-    let lastCount = document.querySelectorAll(SEL.article).length;
-    for (let i = 0; i < 6; i++) {
-      await scrollBy(ri(2, 4));
-      const grown = await waitMoreArticles(lastCount, 6000);
-      if (grown) {
-        lastCount = document.querySelectorAll(SEL.article).length;
-        if (timelineSig() !== before) {
-          await logAct(`${reason} → 继续往下滑，滑出了新内容`, "nav");
-          return "scrolled";
-        }
-        continue;
-      }
-      await sleep(rnd(800, 1600) * SPD);
-    }
-    return "timeout";
-  }
+  /* 【已删除】refreshOrTop —— 原来「旧帖卡住」时的三级刷新流程。
+   * 现在「看到看过的帖子」和「看到自己的回复」都直接双击主页更新，
+   * 这个函数已经没有调用方，删掉避免留死代码。
+   * 保留的刷新入口只有两个：
+   *   ① hardRefreshTimeline —— 整屏都是自己的帖子时用
+   *   ② stepHome 里的双击主页 —— 看到看过的帖子时用
+   */
 
   /* 双击导航按钮 = 刷新时间线（用户明确要求）。
    * 单击只是"回到顶部"，只有双击才会重新加载。
@@ -1348,37 +1323,30 @@
     const tweets = readTweets(12);   // readTweets 内部已自动存档到本地
     const fresh = tweets.filter((t) => !ctx.seen.includes(t.id));
     if (!fresh.length) {
-      /* 【用户要求】这一屏没有新帖时，**双击左侧栏「主页」刷新**。
+      /* 【用户要求】看到看过的帖子 → 直接双击左侧栏「主页」更新。
        * 已经按用户要求删掉了"点显示 N 帖子按钮"那条路：
        * 那颗按钮经常被顶部固定栏遮挡，校验通不过就反复重试，日志刷屏。
        *
        * 现在的顺序：
        *   ① 滚回时间线顶部（新帖插在顶部，往下滚只会越走越旧）
        *   ② 往下滚一屏，看看是不是分页慢
-       *   ③ 双击主页刷新（60 秒限流，避免高频刷新像脚本） */
+       *   ③ 双击主页更新（60 秒限流，避免高频刷新像脚本） */
       await scrollToTop();
 
       const before = document.querySelectorAll(SEL.article).length;
       await scrollBy(ri(2, 4));
       if (await waitMoreArticles(before, 10000)) { ctx.scrollTries = 0; return; }
 
-      // ② 双击主页刷新
+      // ② 双击主页更新
       ctx.scrollTries = (ctx.scrollTries || 0) + 1;
-      const readThisRun = ctx.homeReads || 0;
-      const MIN_READ = beh.min_read_before_refresh ?? 12;
-      if (readThisRun < MIN_READ && ctx.scrollTries < 2) {
-        await logAct(`读到 ${readThisRun}/${MIN_READ} 篇，再翻一屏看看`, "wait");
-        await sleep(rnd(2500, 5000) * SPD);
-        return;
-      }
-      /* 双击刷新限流：60 秒内只刷一次，否则会变成"刷-读-没有-刷"高频循环，
+      /* 双击限流：60 秒内只刷一次，否则会变成"刷-读-没有-刷"高频循环，
        * 平台侧看就是异常刷新行为。 */
       if (ctx.dblLastAt && Date.now() - ctx.dblLastAt < 60e3) {
         await sleep(rnd(5000, 9000) * SPD);
         return;
       }
       ctx.dblLastAt = Date.now();
-      await logAct("连续没有新帖 → 双击左侧栏「主页」刷新时间线", "nav");
+      await logAct("看到的都是看过的帖子 → 双击左侧栏「主页」更新", "nav");
       const refreshed = await doubleClickNav(SEL.navHome, "首页");
       ctx.homeReads = 0; ctx.oldSince = 0; ctx.scrollTries = 0; ctx.noNewRounds = 0;
       if (refreshed) {
@@ -1406,21 +1374,26 @@
     }
     const mine = fresh.filter((t) => isMyHandle(t.handle, beh));
     const others = fresh.filter((t) => !isMyHandle(t.handle, beh));
-    if (mine.length && !others.length) {
+    /* 【用户要求】看到自己的回复（自己的帖子/回复占多数）→ 直接双击主页换一批。
+     * 以前要连续 4 屏都是自己的才刷新，等很久，而且用户看到满屏自己的内容很烦。
+     * 现在的判断：自己的比别人的多就换（少数自己的 + 多数别人的照常读，不浪费）。 */
+    if (mine.length && mine.length >= others.length) {
       ctx.stats.skipped += mine.length;
-      await logAct(`跳过我自己的 ${mine.length} 条帖/回复（不读不赞不评）`, "skip");
-      // 关键：不往下滚，否则会永远停在同一屏自己的帖子上打转
-      const beforeMine = document.querySelectorAll(SEL.article).length;
+      await logAct(`这一屏 ${mine.length} 条是自己的（${others.length} 条别人的）→ 双击主页换一批`, "skip");
       ctx.mineSkips = (ctx.mineSkips || 0) + 1;
-      await scrollBy(ri(1, 2));
-      await waitMoreArticles(beforeMine, 12000);
-      if (ctx.mineSkips >= 4) {          // 连续几屏都是自己的 → 刷新换一批
-        ctx.mineSkips = 0;
-        await logAct("连续几屏都是自己的帖子 → 刷新换一批", "nav");
-        const r = await refreshOrTop("整屏都是自己的帖子");
-        if (r === "home") ctx.tabDone = false;
-        ctx.homeReads = 0;
+      /* 双击限流：60 秒内只刷一次，否则会变成"刷-读-自己的-刷"高频循环 */
+      if (ctx.dblLastAt && Date.now() - ctx.dblLastAt < 60e3) {
+        await sleep(rnd(3000, 6000) * SPD);
+        saveCtx(ctx); return;
       }
+      ctx.dblLastAt = Date.now();
+      await doubleClickNav(SEL.navHome, "首页");
+      ctx.homeReads = 0;
+      ctx.mineSkips = 0;
+      ctx.oldSince = 0;
+      ctx.scrollTries = 0;
+      ctx.tabDone = false;
+      await waitContent(1, 20000, "主页");
       saveCtx(ctx); return;
     }
     ctx.mineSkips = 0;
