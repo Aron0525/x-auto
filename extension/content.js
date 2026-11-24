@@ -182,7 +182,10 @@
           }
         }
         if (!found) {
-          await logAct("落点校验失败：鼠标移不到目标上，跳过这次点击");
+          /* 说清"那个位置实际被谁占着"，方便判断是被固定栏遮挡还是元素已消失。 */
+          const at = document.elementFromPoint(cx, cy);
+          const who = at ? ((at.innerText || at.tagName || "").trim().slice(0, 16)) : "（空白）";
+          await logAct(`落点校验失败：目标中心实际是「${who}」，跳过这次点击`, "wait");
           return false;
         }
       }
@@ -270,45 +273,24 @@
     return false;
   }
 
-  /* 遇到重复/旧帖子时的处理（用户明确的三级顺序）：
-   *   1) 一直往下滑，直到滑出新帖子
-   *   2) 滑不出来 → 点主页横幅下方的「Show N posts」/「新帖」按钮刷新
-   *   3) 还不行 → 点左侧栏「主页」重新进首页，回主流程再走一遍
-   * 返回 "scrolled" | "posts" | "home" | "timeout"。 */
+  /* 遇到重复/旧帖子时的处理（用户要求：直接双击主页刷新）。
+   * 返回 "home" | "scrolled" | "timeout"。
+   *
+   * 【2026-11-24 简化】原来还要去找并点击「显示 N 帖子」按钮，
+   * 但那个按钮经常被顶部的固定栏挡住，elementFromPoint 校验通不过，
+   * 反复重试造成 "落点校验失败" 刷屏。用户要求：去掉点按钮，只双击主页。 */
   async function refreshOrTop(reason) {
-    /* 【用户明确要求】没有帖子时 = 双击左侧栏「主页」刷新。
-     *
-     * 顺序调整为：
-     *   ① 双击主页（首选，最接近真人操作：没内容了就双击主页签重载）
-     *   ② 点「Show N posts」/「新帖」按钮
-     *   ③ 往下滑（老内容还可能没翻完）
-     * 以前是先死命往下滑 8 次才回头看按钮，用户看到的就是"卡住不动"。 */
     const before = timelineSig();
 
-    // ---- 1) 双击主页（首选）----
+    // ---- 1) 双击主页（唯一刷新手段）----
     await logAct(`${reason} → 双击左侧栏「主页」刷新`, "nav");
     if (await doubleClickNav(SEL.navHome, "首页")) {
       if (timelineSig() !== before) return "home";
     }
 
-    // ---- 2) 点横幅「Show N posts」/「新帖」按钮 ----
-    const pill = findNewPostsPill();
-    if (pill && await clickEl(pill, { settle: [1500, 2600] })) {
-      const label = (pill.innerText || "").trim().slice(0, 24) || "新帖";
-      await logAct(`${reason} → 点「${label}」刷新`, "nav");
-      await sleep(rnd(1200, 2200) * SPD);
-      if (await waitTimelineChange(before, 15000, "点按钮刷新")) return "posts";
-    }
-    const arrow = q(SEL.newPostsBtn);
-    if (arrow && await clickEl(arrow, { settle: [1500, 2600] })) {
-      await logAct(`${reason} → 点顶部「新帖」箭头刷新`, "nav");
-      await sleep(rnd(1200, 2200) * SPD);
-      if (await waitTimelineChange(before, 15000, "顶部刷新")) return "posts";
-    }
-
-    // ---- 3) 往下滑（老内容可能还没翻完）----
+    // ---- 2) 往下滑（老内容可能还没翻完）----
     let lastCount = document.querySelectorAll(SEL.article).length;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 6; i++) {
       await scrollBy(ri(2, 4));
       const grown = await waitMoreArticles(lastCount, 6000);
       if (grown) {
@@ -1225,72 +1207,25 @@
     loop();
   }
 
-  /* 强制刷新时间线：
-   * 优先点「Show N posts」/「新帖」按钮；没有就滚到顶再点一次首页 tab（UI 内重载）。 */
+  /* 强制刷新时间线：**只双击主页**（用户要求）。
+   * 不再去找「显示 N 帖子」按钮——它经常被顶部固定栏遮挡，校验通不过反而刷屏。 */
   async function hardRefreshTimeline() {
     const before = timelineSig();
-    const pill = findNewPostsPill();
-    if (pill && await clickEl(pill, { settle: [1500, 2600] })) {
-      if (await waitTimelineChange(before, 15000, "开始刷新")) return true;
-    }
-    // 滚到顶部后点一下当前 tab（For You），触发重新拉取
-    for (let i = 0; i < 6; i++) { await scrollBy(-3); await sleep(rnd(300, 600) * SPD); }
-    // 用精确点击：通用点击带偏移，会把「主页」点到下面的「探索」
-    if (await clickNavExact(SEL.navHome, "首页")) {
+    await scrollToTop();
+    if (await doubleClickNav(SEL.navHome, "首页")) {
       return await waitTimelineChange(before, 15000, "首页刷新");
     }
     return false;
   }
 
-  // 找顶部横幅下方的刷新按钮（按可见文案，X 会改版、界面语言会变）
-  // 中文是「已发布」（截图为证），英文是「Show N posts」「New posts」
-  function findNewPostsPill() {
-    /* 文案白名单（中英文都要覆盖）：
-     *   显示 35 帖子 / 显示 12 条 / 显示 175 个帖子
-     *   查看新帖子 / 新帖子 / 已发布 / 已推送
-     *   Show 175 posts / 175 posts / New posts
-     * 注意「显示 35 帖子」在 X 上是**发帖框下面、第一条帖子上面**那一行。 */
-    const RES = [
-      /^\s*显示\s*\d+\s*(条|个)?\s*帖子?\s*$/i,
-      /^\s*显示\s*\d+\s*条\s*$/i,
-      /查看新帖子|新帖子|已发布|已推送/i,
-      /Show\s+\d+\s+posts?/i,
-      /^\s*\d+\s*posts?\s*$/i,
-      /new\s+posts?/i,
-    ];
-    const matchText = (t) => !!t && t.length <= 40 && RES.some((re) => re.test(t));
-    const vis = (el) => {
-      const r = el.getBoundingClientRect();
-      if (r.width < 8 || r.height < 8) return false;
-      if (r.bottom < 0 || r.top > innerHeight) return false;
-      return true;
-    };
+  /* 【已删除】findNewPostsPill —— 查找「显示 N 帖子 / 查看新帖子」那颗按钮。
+   * 删除原因：这颗按钮在中文界面上是发帖框下面那一行文字，
+   * 经常被顶部固定栏遮挡，elementFromPoint 落点校验必然失败，
+   * 日志反复刷「落点校验失败：鼠标移不到目标上，跳过这次点击」。
+   * 用户明确要求：这部分不要了，刷新一律双击主页。
+   * 如果以后要恢复，重新加回文本匹配 + 向上找可点击祖先即可。 */
 
-    // ① 先找天然可点击的元素
-    const clickables = [...document.querySelectorAll(
-      'button, [role="button"], a[role="button"], div[role="button"]'
-    )];
-    for (const el of clickables) {
-      if (matchText((el.innerText || "").trim()) && vis(el)) return el;
-    }
-    // ② 退一步：任意元素的文本匹配，然后向上找可点击祖先
-    //    （「显示 35 帖子」很可能是个普通 div/span，靠父层接点击）
-    const any = [...document.querySelectorAll("div, span, p")];
-    for (const el of any) {
-      const t = (el.innerText || "").trim();
-      if (!matchText(t) || !vis(el)) continue;
-      let p = el;
-      for (let i = 0; i < 6 && p; i++) {
-        if (p.tagName === "BUTTON" || p.getAttribute("role") === "button" ||
-            p.getAttribute("tabindex") !== null) return p;
-        p = p.parentElement;
-      }
-      return el;                 // 找不到可点击祖先就用它本身
-    }
-    return null;
-  }
-
-  /* 滚到时间线最上面。用户要求：遇到看过的帖子要先拉到顶部，看有没有「显示 N 帖子」。 */
+  /* 滚到时间线最上面。刷新前先回顶，让双击主页的效果最明显。 */
   async function scrollToTop(maxTries = 12) {
     for (let i = 0; i < maxTries; i++) {
       const y = window.scrollY || document.documentElement.scrollTop || 0;
@@ -1301,34 +1236,12 @@
     return (window.scrollY || 0) <= 4;
   }
 
-  /* 有「显示 N 帖子 / 查看新帖子」就点它拉新帖。
-   * 返回 true = 点完后**真的出现了没读过的新帖**（用帖子 id 判断，不看 DOM 签名）。
-   *
-   * 为什么不能只看签名：点一下按钮 X 会重渲染整列，签名必然变，
-   * 但内容还是那几条——以前就因此每隔两秒点一次，永远读不到新帖。
-   * 另外加 45 秒冷却，同一颗按钮不反复点。 */
-  async function clickNewPostsPillIfAny(where = "") {
-    const pill = findNewPostsPill();
-    if (!pill) return false;
-    if (ctx && ctx.pillLastAt && Date.now() - ctx.pillLastAt < 45e3) return false;
-    const label = ((pill.innerText || "").trim()).slice(0, 20);
-    const beforeIds = new Set(readTweets(12).map((t) => t.id));
-    if (!(await clickEl(pill, { settle: [1500, 2600] }))) return false;
-    if (ctx) ctx.pillLastAt = Date.now();
-    await logAct(`${where ? where + " → " : ""}发现顶部「${label}」，点它拉新帖`, "nav");
-    // 等它把新帖插进来，再用「有没有没读过的 id」判断成功
-    for (let i = 0; i < 6; i++) {
-      await sleep(rnd(600, 1000) * SPD);
-      const now = readTweets(12);
-      const freshOnes = now.filter((t) => !beforeIds.has(t.id) && !(ctx && ctx.seen.includes(t.id)));
-      if (freshOnes.length) {
-        await logAct(`「${label}」生效：拉到 ${freshOnes.length} 条没读过的新帖`, "judge");
-        return true;
-      }
-    }
-    await logAct(`点了「${label}」但没有新内容（可能确实没有新帖）`, "wait");
-    return false;
-  }
+  /* 【已删除】clickNewPostsPillIfAny —— 点「显示 N 帖子」那条路。
+   * 删除原因：这颗按钮经常被页面顶部固定栏/吸顶容器盖住，
+   * elementFromPoint 校验必然失败，日志刷屏
+   *   「落点校验失败：鼠标移不到目标上，跳过这次点击」
+   * 而且失败后不设冷却，会反复重试形成死循环。
+   * 用户决定：不再点它，刷新一律用双击主页。 */
 
   /* 停止信号：停止时不仅设 ctx.run=false，还要让**正在执行的步骤立即中断**。
    * 以前只设标志位，当前 stepXxx 已经在 await 里，会继续跑完整个步骤
@@ -1358,15 +1271,10 @@
 
   async function stepHome(beh) {
     if (!onHome()) { await goHome(); return; }
-    /* 【用户要求】进入/回到时间线（为你推荐、正在关注）时，
-     * 先看顶部有没有「显示 N 帖子」，有就先点它拉最新一批。
-     * 限流：最多 3 分钟查一次，否则每次循环都滚到顶部会一直打断阅读。 */
-    if (!ctx.pillCheckedAt || Date.now() - ctx.pillCheckedAt > 3 * 60e3) {
-      ctx.pillCheckedAt = Date.now();
+    /* 进时间线时先滚回顶部——顺带让后面双击主页的刷新更明显。 */
+    if (!ctx.topCheckedAt || Date.now() - ctx.topCheckedAt > 3 * 60e3) {
+      ctx.topCheckedAt = Date.now();
       await scrollToTop();
-      if (await clickNewPostsPillIfAny("时间线顶部")) {
-        await logAct("已拉到最新一批帖子", "judge");
-      }
     }
     /* 栏目策略（用户要求）：
      * 「为你推荐」和「正在关注」按比例轮换，默认 7:3。
@@ -1383,9 +1291,8 @@
       if (!spec.re.test(curTx)) await switchFeedTab(want);
       ctx.feedNow = want;
       ctx.tabDone = true;
-      /* 刚切完栏目，时间线是重新加载的，再查一次顶部「显示 N 帖子」 */
+      // 刚切完栏目，时间线会重新拉取，稍等一下再看内容
       await sleep(rnd(1200, 2200) * SPD);
-      await clickNewPostsPillIfAny("切换栏目后");
     }
 
     /* 【按比例换栏目】用「配额制」而不是「每次掷骰子」。
@@ -1441,29 +1348,21 @@
     const tweets = readTweets(12);   // readTweets 内部已自动存档到本地
     const fresh = tweets.filter((t) => !ctx.seen.includes(t.id));
     if (!fresh.length) {
-      /* 【用户要求】这一屏没有新帖时，最终手段就是**双击左侧栏「主页」刷新**。
-       * 处理顺序（从轻到重）：
-       *   ① 往下滚一屏 —— 很多情况只是分页慢
-       *   ② 点横幅上的「Show N posts」—— 最不打扰
-       *   ③ 双击主页 —— 真正重新拉时间线
-       * 以前③排在第 8 次滚动之后，还夹着 min_read 门槛，看起来就是"卡住不刷新"。 */
-      /* 【用户要求】遇到看过的帖子时，先**拉到最上面**看有没有「显示 N 帖子」。
-       * 因为新帖是插在时间线顶部的，往下滚只会越走越旧。 */
+      /* 【用户要求】这一屏没有新帖时，**双击左侧栏「主页」刷新**。
+       * 已经按用户要求删掉了"点显示 N 帖子按钮"那条路：
+       * 那颗按钮经常被顶部固定栏遮挡，校验通不过就反复重试，日志刷屏。
+       *
+       * 现在的顺序：
+       *   ① 滚回时间线顶部（新帖插在顶部，往下滚只会越走越旧）
+       *   ② 往下滚一屏，看看是不是分页慢
+       *   ③ 双击主页刷新（60 秒限流，避免高频刷新像脚本） */
       await scrollToTop();
-      if (await clickNewPostsPillIfAny("遇到看过的帖子")) {
-        ctx.oldSince = 0; ctx.scrollTries = 0; return;
-      }
 
       const before = document.querySelectorAll(SEL.article).length;
       await scrollBy(ri(2, 4));
       if (await waitMoreArticles(before, 10000)) { ctx.scrollTries = 0; return; }
 
-      // ② 再试一次横幅按钮（滚动后位置可能变了，动作也可能刚出现）
-      if (await clickNewPostsPillIfAny("")) {
-        ctx.oldSince = 0; ctx.scrollTries = 0; return;
-      }
-
-      // ③ 双击主页刷新（用户明确要求的方式）
+      // ② 双击主页刷新
       ctx.scrollTries = (ctx.scrollTries || 0) + 1;
       const readThisRun = ctx.homeReads || 0;
       const MIN_READ = beh.min_read_before_refresh ?? 12;
@@ -1472,7 +1371,7 @@
         await sleep(rnd(2500, 5000) * SPD);
         return;
       }
-      /* 双击刷新也限流：60 秒内只刷一次，否则会变成"刷-读-没有-刷"高频循环，
+      /* 双击刷新限流：60 秒内只刷一次，否则会变成"刷-读-没有-刷"高频循环，
        * 平台侧看就是异常刷新行为。 */
       if (ctx.dblLastAt && Date.now() - ctx.dblLastAt < 60e3) {
         await sleep(rnd(5000, 9000) * SPD);
