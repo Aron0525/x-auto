@@ -1193,86 +1193,59 @@
       }
     }
     // 每读 5 篇去发现页找一次可关注的人（用户策略：涨关注、涨时间线）
-    if ((ctx.homeReads || 0) >= 5 && (await budgetLeft("follow", beh.limits.follow)) > 0) {
+    /* 但发现页经常是一条帖子都没有（默认是趋势/体育组件），
+     * 一旦失败过就 20 分钟内不再去，避免 "进发现页 → 空等 → 回主页" 死循环。 */
+    const exploreCooled = !!(ctx.exploreBlocked && Date.now() - ctx.exploreBlocked < 20 * 60000);
+    if ((ctx.homeReads || 0) >= 5 && (await budgetLeft("follow", beh.limits.follow)) > 0 && !exploreCooled) {
       ctx.homeReads = 0;
       ctx.phase = "explore"; saveCtx(ctx); return;
     }
+    /* 正处于发现页冷却期：把这 5 篇的计数清掉，继续在主页刷，
+     * 否则 homeReads 会一直 ≥5、每次循环都判一次。 */
+    if (exploreCooled && (ctx.homeReads || 0) >= 5) ctx.homeReads = 0;
     const tweets = readTweets(12);   // readTweets 内部已自动存档到本地
     const fresh = tweets.filter((t) => !ctx.seen.includes(t.id));
     if (!fresh.length) {
-      // 这一屏全是读过的帖子 = 要么滑进了旧帖区（新帖在上方），要么加载停滞。
-      // 两种情况的解法一样：先等一会儿（慢网分页晚到），还不行就回顶/刷新。
+      /* 【用户要求】这一屏没有新帖时，最终手段就是**双击左侧栏「主页」刷新**。
+       * 处理顺序（从轻到重）：
+       *   ① 往下滚一屏 —— 很多情况只是分页慢
+       *   ② 点横幅上的「Show N posts」—— 最不打扰
+       *   ③ 双击主页 —— 真正重新拉时间线
+       * 以前③排在第 8 次滚动之后，还夹着 min_read 门槛，看起来就是"卡住不刷新"。 */
       const before = document.querySelectorAll(SEL.article).length;
       await scrollBy(ri(2, 4));
-      if (await waitMoreArticles(before, 20000)) { ctx.scrollTries = 0; return; }
+      if (await waitMoreArticles(before, 10000)) { ctx.scrollTries = 0; return; }
+
+      // ② 横幅「Show N posts」
+      const pill = findNewPostsPill();
+      if (pill) {
+        const beforeSig = timelineSig();
+        if (await clickEl(pill, { settle: [1500, 2600] })) {
+          await logAct(`这一屏没有新帖 → 点「${(pill.innerText || "").trim().slice(0, 20)}」拉新帖`, "nav");
+          if (await waitTimelineChange(beforeSig, 12000, "拉新帖")) {
+            ctx.oldSince = 0; ctx.scrollTries = 0; return;
+          }
+        }
+      }
+
+      // ③ 双击主页刷新（用户明确要求的方式）
       ctx.scrollTries = (ctx.scrollTries || 0) + 1;
-      if (ctx.scrollTries >= 2) {
-        // 【用户要求 6】如果 1 分钟内反复出现已看过的帖子 → 立刻点「Show N posts」拉新；
-        // 超过 1 分钟还这样，说明刷新也没用，强制再刷一次。
-        const now = Date.now();
-        ctx.oldSince = ctx.oldSince || now;
-        const stuckMs = now - ctx.oldSince;
+      const readThisRun = ctx.homeReads || 0;
+      const MIN_READ = beh.min_read_before_refresh ?? 12;
+      if (readThisRun < MIN_READ && ctx.scrollTries < 2) {
+        await logAct(`读到 ${readThisRun}/${MIN_READ} 篇，再翻一屏看看`, "wait");
+        await sleep(rnd(2500, 5000) * SPD);
+        return;
+      }
 
-        // 先试着点那颗「Show N posts」按钮（用户明确说就是这个）
-        const pill = findNewPostsPill();
-        if (pill && stuckMs < 60000) {
-          const beforeSig = timelineSig();
-          if (await clickEl(pill, { settle: [1500, 2600] })) {
-            await logAct(`又出现看过的帖子 → 点「${(pill.innerText || "").trim().slice(0, 20)}」拉新帖`, "nav");
-            if (await waitTimelineChange(beforeSig, 15000, "拉新帖")) {
-              ctx.oldSince = 0; ctx.scrollTries = 0; return;
-            }
-          }
-        }
-
-        const readThisRun = ctx.homeReads || 0;
-        const MIN_READ = beh.min_read_before_refresh ?? 12;
-        if (readThisRun < MIN_READ && stuckMs < 60000) {
-          await logAct(`读到的都是旧帖，但本轮才读 ${readThisRun}/${MIN_READ} 篇 —— 继续往下翻，先不刷新`, "wait");
-          ctx.scrollTries = 0;
-          await sleep(rnd(3000, 6000) * SPD);
-          return;
-        }
-
-        await logAct(stuckMs >= 60000
-          ? "连续 1 分钟以上都是看过的旧帖 → 开始刷新"
-          : "连续滚动都是读过的帖子（滑到旧帖区或加载停滞）→ 开始刷新", "wait");
-        /* refreshOrTop 内部已按用户要求的三级顺序走：
-         *   ① 死命往下滑 → ② 点「已发布」/新帖按钮 → ③ 点左侧栏「主页」重进
-         * 返回值 now: "scrolled" | "posts" | "home" | "timeout" */
-        const r = await refreshOrTop("旧帖卡住");
-        ctx.homeReads = 0;
-        ctx.oldSince = 0;
-        ctx.scrollTries = 0;
-
-        if (r === "scrolled" || r === "posts") {
-          ctx.noNewRounds = 0;
-          return;                       // 拿到内容了，继续正常刷
-        }
-        if (r === "home") {
-          ctx.tabDone = false;          // 重进首页，回到流程开头重新走
-          ctx.noNewRounds = 0;
-          return;
-        }
-
-        // 三级都失败（timeout）→ 按设定的比例换栏目看看
-        ctx.noNewRounds = (ctx.noNewRounds || 0) + 1;
-        if (ctx.noNewRounds >= 2) {
-          const cur = ctx.feedNow || ctx.feed || "for_you";
-          const next = cur === "following" ? "for_you" : "following";
-          ctx.noNewRounds = 0;
-          await logAct(`「${FEED_LABELS[cur]?.cn || cur}」拉不出新帖了 → 换到「${FEED_LABELS[next].cn}」看看`, "nav");
-          if (await switchFeedTab(next)) {
-            ctx.feedNow = next;
-            ctx.feedCount = ctx.feedCount || {};
-            ctx.feedCount[next] = (ctx.feedCount[next] || 0) + 1;
-            ctx.seen = [];              // 换栏目后内容不同，重新从零开始记「读过」
-            ctx.homeReads = 0;
-            await sleep(rnd(3000, 6000) * SPD);
-            return;
-          }
-        }
-        await sleep(rnd(8000, 15000) * SPD);
+      await logAct("连续没有新帖 → 双击左侧栏「主页」刷新时间线", "nav");
+      const refreshed = await doubleClickNav(SEL.navHome, "首页");
+      ctx.homeReads = 0; ctx.oldSince = 0; ctx.scrollTries = 0; ctx.noNewRounds = 0;
+      if (refreshed) {
+        await waitContent(1, 20000, "主页");
+        ctx.tabDone = false;       // 回流程开头重新走
+      } else {
+        await sleep(rnd(6000, 12000) * SPD);
       }
       return;
     }
@@ -1685,14 +1658,18 @@
         ctx.phase = "home"; await goHome(); saveCtx(ctx); return;
       }
     }
-    /* 等发现页内容。超时说明这一页没加载出来（慢网/被限流/跳走了），
-     * 用户要求：**这种情况直接重新点主页**，不要在空页面上继续找用户。
-     * 之前超时后仍往下走，结果在空页面上读到 0 个候选，白等 25 秒还留下脏状态。 */
-    const loaded = await waitContent(1, 25000, "发现页");
+    /* 等发现页内容。**发现页默认显示的是趋势/新闻/体育比分这类组件，
+     * 很多时候一条帖子都没有**，等 25 秒纯属白等（用户截图里就是这样：
+     * 停在「体育」组件上，当前 0 条，反复超时）。
+     * 所以：只等 9 秒，没帖子就判定发现页不可用 →
+     *   ① 标记 exploreBlocked，20 分钟内不再进来（避免无谓循环）
+     *   ② 双击主页刷新时间线（用户明确要求：没帖就双击主页） */
+    const loaded = await waitContent(1, 9000, "发现页");
     if (!loaded) {
-      await logAct("发现页没加载出来 → 重新点主页，回时间线继续刷", "nav");
+      ctx.exploreBlocked = Date.now();
+      await logAct("发现页没有帖子（默认显示趋势/体育组件）→ 双击主页刷新，20 分钟内不再进发现页", "nav");
       ctx.phase = "home";
-      await goHome();
+      await doubleClickNav(SEL.navHome, "首页");
       await waitContent(1, 20000, "主页");
       saveCtx(ctx);
       return;
