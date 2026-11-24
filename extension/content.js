@@ -301,8 +301,9 @@
   /* 双击导航按钮 = 刷新时间线（用户明确要求）。
    * 单击只是"回到顶部"，只有双击才会重新加载。
    * 关键：两次点击之间**不能移动鼠标**，否则浏览器当成两次独立单击。
-   * 所以不能在 content 里连调两次 clickEl（那会重新 hover + 落点校验），
-   * 要走 background 的 dblclick 原语，一次完成。 */
+   * 所以不在 content 里连调两次 clickEl，走 background 的 dblclick 原语。
+   * 落点用 elementFromPoint 校验（不用 _off，理由同 clickNavExact：
+   * 偏移会把「主页」点成下面的「探索」）。 */
   async function doubleClickNav(sel, label) {
     const el = q(sel);
     if (!el) { await logAct(`找不到「${label}」按钮`, "wait"); return false; }
@@ -310,15 +311,23 @@
     const r = await stableRect(el);
     if (r.width <= 0 || r.height <= 0) return false;
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    let x = cx + _off.dx, y = cy + _off.dy;
-    if (!(await hoverHits(el, x, y))) {
-      const hit = await scanForHit(el, cx, cy, 24, 8);
-      if (hit) { x = hit.x; y = hit.y; _off.dx += hit.dx; _off.dy += hit.dy; }
-      else { await logAct("落点校验失败：鼠标移不到「主页」上，跳过", "skip"); return false; }
+    const hitTarget = (x, y) => {
+      const t = document.elementFromPoint(x, y);
+      if (!t) return false;
+      return el === t || el.contains(t) || t.contains(el);
+    };
+    const cand = [[0, 0]];
+    for (const d of [3, 6, 10]) cand.push([0, -d], [0, d], [-d, 0], [d, 0]);
+    for (const [dx, dy] of cand) {
+      const x = Math.min(r.right - 2, Math.max(r.left + 2, cx + dx));
+      const y = Math.min(r.bottom - 2, Math.max(r.top + 2, cy + dy));
+      if (!hitTarget(x, y)) continue;
+      await send({ t: "input", op: "dblclick", x, y, speed: SPD });
+      await sleep(rnd(1500, 2600) * SPD);
+      return true;
     }
-    await send({ t: "input", op: "dblclick", x, y, speed: SPD });
-    await sleep(rnd(1500, 2600) * SPD);
-    return true;
+    await logAct(`「${label}」双击落点校验失败：那个位置不是它，跳过`, "wait");
+    return false;
   }
 
   /* 全文读取：时间线卡片里长文默认折叠（Show more）。
@@ -374,14 +383,59 @@
     }
   }
 
+  /* 通用「精确点击」：不用 _off 偏移，用 elementFromPoint 校验落点。
+   * 适用于侧栏项、栏目 tab 这类**彼此紧挨着**的目标——
+   * 偏移一旦积累，主页会点到探索、为你推荐会点到创业公司。 */
+  async function clickExact(el, label = "", settle = [1200, 2200]) {
+    if (!el) return false;
+    checkAbort();
+    const r = await stableRect(el);
+    if (r.width <= 0 || r.height <= 0) return false;
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const hitTarget = (x, y) => {
+      const t = document.elementFromPoint(x, y);
+      if (!t) return false;
+      return el === t || el.contains(t) || t.contains(el);
+    };
+    const cand = [[0, 0]];
+    for (const d of [3, 6, 10]) cand.push([0, -d], [0, d], [-d, 0], [d, 0]);
+    for (const [dx, dy] of cand) {
+      const x = Math.min(r.right - 2, Math.max(r.left + 2, cx + dx));
+      const y = Math.min(r.bottom - 2, Math.max(r.top + 2, cy + dy));
+      if (!hitTarget(x, y)) continue;
+      await send({ t: "input", op: "press", x, y, speed: SPD });
+      await sleep(rnd(settle[0] * SPD, settle[1] * SPD));
+      return true;
+    }
+    await logAct(`「${label || (el.innerText || "").trim().slice(0, 12)}」落点校验失败：那个位置不是它，跳过`, "wait");
+    return false;
+  }
+
   async function clickNav(sel, label = "页面", waitSel = SEL.article) {
     await discardDrafts();
     const before = timelineSig(waitSel);
-    if (!(await clickSel(sel, { settle: [1200, 2200] }))) return false;
+    if (!(await clickNavExact(sel, label))) return false;
     // 慢网适配：SPA 换页后必须等新内容渲染完再动手
     await waitContent(1, 25000, label, waitSel);
     await waitTimelineChange(before, 15000, label, waitSel);
     return true;
+  }
+
+  /* ---------- 侧栏导航精确点击 ----------
+   *
+   * 事故：点「主页」经常点成「探索」。
+   * 原因：侧栏各项上下相邻（主页/探索只隔约 48px），而通用 clickEl 会带上
+   *       全局累积偏移 _off.dy；一旦 :hover 校验失效（标签页不可见时 :hover
+   *       永远不亮 → 退回直点模式），这个偏移就把落点整体下移，正好压到「探索」。
+   *
+   * 现在导航点击完全不用 _off，改用**几何命中校验**：
+   *   document.elementFromPoint(x,y) 必须落在这个导航元素（或它的子孙）上才点。
+   * 这个校验不依赖 :hover 渲染，标签页在后台也准确。 */
+  async function clickNavExact(sel, label = "") {
+    const el = q(sel);
+    if (!el) { await logAct(`找不到「${label || sel}」按钮`, "wait"); return false; }
+    return await clickExact(el, label || sel, [1200, 2200]);
   }
   /* 回首页。优先点导航栏（人类行为）；点不到就直接改地址兜底。
    * 发现页加载失败时导航栏可能也是空的，只靠点击会卡在原地。 */
@@ -452,7 +506,9 @@
     const before = timelineSig();
     const label = spec.cn;
     await logAct(`切栏目：点击「${tx}」`, "nav");
-    if (!(await clickEl(tab, { settle: [1500, 2600] }))) return false;
+    /* 栏目 tab 也是紧挨着的（为你推荐/正在关注/AI/创业公司…），
+     * 用精确点击避免横向偏移点到隔壁栏目。 */
+    if (!(await clickExact(tab, `栏目「${tx}」`, [1500, 2600]))) return false;
     // 慢网：切栏目后时间线要重新拉取，等内容真的换一批再开始读
     await waitContent(1, 25000, label + " 栏目");
     const changed = await waitTimelineChange(before, 15000, label + " 栏目");
@@ -1090,7 +1146,8 @@
     }
     // 滚到顶部后点一下当前 tab（For You），触发重新拉取
     for (let i = 0; i < 6; i++) { await scrollBy(-3); await sleep(rnd(300, 600) * SPD); }
-    if (await clickSel(SEL.navHome, { settle: [1500, 2600] })) {
+    // 用精确点击：通用点击带偏移，会把「主页」点到下面的「探索」
+    if (await clickNavExact(SEL.navHome, "首页")) {
       return await waitTimelineChange(before, 15000, "首页刷新");
     }
     return false;
@@ -1110,6 +1167,30 @@
       const r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0;      // 必须是可见的
     }) || null;
+  }
+
+  /* 滚到时间线最上面。用户要求：遇到看过的帖子要先拉到顶部，看有没有「显示 N 帖子」。 */
+  async function scrollToTop(maxTries = 12) {
+    for (let i = 0; i < maxTries; i++) {
+      const y = window.scrollY || document.documentElement.scrollTop || 0;
+      if (y <= 4) return true;
+      await scrollBy(-Math.max(3, Math.ceil(y / 600)));   // 一次滚回大半
+      await sleep(rnd(500, 900) * SPD);
+    }
+    return (window.scrollY || 0) <= 4;
+  }
+
+  /* 有「显示 N 帖子」就点它拉新帖。
+   * 返回 true = 点成功且时间线确实变了。 */
+  async function clickNewPostsPillIfAny(where = "") {
+    const pill = findNewPostsPill();
+    if (!pill) return false;
+    const label = ((pill.innerText || "").trim()).slice(0, 20);
+    const beforeSig = timelineSig();
+    if (!(await clickEl(pill, { settle: [1500, 2600] }))) return false;
+    await logAct(`${where ? where + " → " : ""}发现顶部「${label}」，点它拉新帖`, "nav");
+    const changed = await waitTimelineChange(beforeSig, 12000, "拉新帖");
+    return !!changed;
   }
 
   /* 停止信号：停止时不仅设 ctx.run=false，还要让**正在执行的步骤立即中断**。
@@ -1140,6 +1221,16 @@
 
   async function stepHome(beh) {
     if (!onHome()) { await goHome(); return; }
+    /* 【用户要求】进入/回到时间线（为你推荐、正在关注）时，
+     * 先看顶部有没有「显示 N 帖子」，有就先点它拉最新一批。
+     * 限流：最多 3 分钟查一次，否则每次循环都滚到顶部会一直打断阅读。 */
+    if (!ctx.pillCheckedAt || Date.now() - ctx.pillCheckedAt > 3 * 60e3) {
+      ctx.pillCheckedAt = Date.now();
+      await scrollToTop();
+      if (await clickNewPostsPillIfAny("时间线顶部")) {
+        await logAct("已拉到最新一批帖子", "judge");
+      }
+    }
     /* 栏目策略（用户要求）：
      * 「为你推荐」和「正在关注」按比例轮换，默认 7:3。
      * 以前是"刷不动才换"，结果几乎全在为你推荐，正在关注基本没去过。
@@ -1155,6 +1246,9 @@
       if (!spec.re.test(curTx)) await switchFeedTab(want);
       ctx.feedNow = want;
       ctx.tabDone = true;
+      /* 刚切完栏目，时间线是重新加载的，再查一次顶部「显示 N 帖子」 */
+      await sleep(rnd(1200, 2200) * SPD);
+      await clickNewPostsPillIfAny("切换栏目后");
     }
 
     /* 【按比例换栏目】用「配额制」而不是「每次掷骰子」。
@@ -1216,20 +1310,20 @@
        *   ② 点横幅上的「Show N posts」—— 最不打扰
        *   ③ 双击主页 —— 真正重新拉时间线
        * 以前③排在第 8 次滚动之后，还夹着 min_read 门槛，看起来就是"卡住不刷新"。 */
+      /* 【用户要求】遇到看过的帖子时，先**拉到最上面**看有没有「显示 N 帖子」。
+       * 因为新帖是插在时间线顶部的，往下滚只会越走越旧。 */
+      await scrollToTop();
+      if (await clickNewPostsPillIfAny("遇到看过的帖子")) {
+        ctx.oldSince = 0; ctx.scrollTries = 0; return;
+      }
+
       const before = document.querySelectorAll(SEL.article).length;
       await scrollBy(ri(2, 4));
       if (await waitMoreArticles(before, 10000)) { ctx.scrollTries = 0; return; }
 
-      // ② 横幅「Show N posts」
-      const pill = findNewPostsPill();
-      if (pill) {
-        const beforeSig = timelineSig();
-        if (await clickEl(pill, { settle: [1500, 2600] })) {
-          await logAct(`这一屏没有新帖 → 点「${(pill.innerText || "").trim().slice(0, 20)}」拉新帖`, "nav");
-          if (await waitTimelineChange(beforeSig, 12000, "拉新帖")) {
-            ctx.oldSince = 0; ctx.scrollTries = 0; return;
-          }
-        }
+      // ② 再试一次横幅按钮（滚动后位置可能变了，动作也可能刚出现）
+      if (await clickNewPostsPillIfAny("")) {
+        ctx.oldSince = 0; ctx.scrollTries = 0; return;
       }
 
       // ③ 双击主页刷新（用户明确要求的方式）
